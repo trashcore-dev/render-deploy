@@ -8,6 +8,7 @@ app.use(cors());
 app.use(express.json());
 
 const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // add your GitHub PAT here
 const DATA_FILE = "./data.json";
 
 if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify([]));
@@ -18,11 +19,33 @@ function saveApp(appInfo) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
+// Simple in-memory cache for fork verification
+const forkCache = {};
+
+async function checkFork(owner, repoName) {
+  const key = `${owner}/${repoName}`;
+  if (forkCache[key] !== undefined) return forkCache[key];
+
+  try {
+    const res = await axios.get(`https://api.github.com/repos/${owner}/${repoName}`, {
+      headers: { Authorization: `token ${GITHUB_TOKEN}` }
+    });
+    const repoData = res.data;
+
+    const isAllowed = repoData.fork || owner === "Tennor-modz";
+    forkCache[key] = isAllowed;
+    return isAllowed;
+  } catch (err) {
+    console.error("GitHub API error:", err.response?.data || err.message);
+    forkCache[key] = false;
+    return false;
+  }
+}
+
 // ✅ Deploy bot only if it's Tennor-modz repo or a fork
 app.post("/deploy", async (req, res) => {
   const { repo, appName, sessionId } = req.body;
 
-  // Extract owner and repo name from URL
   const match = repo.match(/github\.com\/([^/]+)\/([^/]+)/);
   if (!match) return res.status(400).json({ success: false, message: "❌ Invalid GitHub repo URL." });
 
@@ -33,11 +56,8 @@ app.post("/deploy", async (req, res) => {
   }
 
   try {
-    // Check GitHub API to ensure it exists and is a fork if not Tennor-modz
-    const githubRes = await axios.get(`https://api.github.com/repos/${owner}/${name}`);
-    const repoData = githubRes.data;
-
-    if (!repoData.fork && owner !== "Tennor-modz") {
+    const allowed = await checkFork(owner, name);
+    if (!allowed) {
       return res.status(400).json({ success: false, message: "❌ Only forks of Tennor-modz are allowed." });
     }
 
@@ -62,7 +82,6 @@ app.post("/deploy", async (req, res) => {
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
-    // Save to data.json
     const info = {
       name: appName,
       repo,
@@ -74,7 +93,6 @@ app.post("/deploy", async (req, res) => {
 
     res.json({ success: true, message: `✅ Bot "${appName}" deployed!`, app: info });
   } catch (err) {
-    // 🔹 Log and return full error
     console.error(err.response?.data || err.message);
     res.status(500).json({
       success: false,
