@@ -15,11 +15,8 @@ if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify([]));
 
 // -------------------- DATA.JSON HELPERS --------------------
 function readData() {
-  try {
-    return JSON.parse(fs.readFileSync(DATA_FILE));
-  } catch {
-    return [];
-  }
+  try { return JSON.parse(fs.readFileSync(DATA_FILE)); } 
+  catch { return []; }
 }
 
 function writeData(data) {
@@ -44,7 +41,7 @@ function sanitizeAppName(name) {
   return name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "").replace(/--+/g, "-");
 }
 
-// -------------------- DEPLOY BOT --------------------
+// -------------------- DEPLOY BOT WITH LIVE LOGS --------------------
 app.get("/deploy/:appName/logs", async (req, res) => {
   const { appName } = req.params;
   const { repo, sessionId } = req.query;
@@ -58,15 +55,15 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   res.flushHeaders();
 
   try {
-    // 1️⃣ Create Heroku app
+    // Create Heroku app
     await axios.post(
       "https://api.heroku.com/apps",
       { name: sanitizedAppName },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
-    res.write(`data: ✅ Trash app created: ${sanitizedAppName}\n\n`);
+    res.write(`data: ✅ App created: ${sanitizedAppName}\n\n`);
 
-    // 2️⃣ Set SESSION_ID
+    // Set SESSION_ID
     await axios.patch(
       `https://api.heroku.com/apps/${sanitizedAppName}/config-vars`,
       { SESSION_ID: sessionId },
@@ -74,7 +71,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     );
     res.write(`data: ✅ SESSION_ID configured.\n\n`);
 
-    // 3️⃣ Start build
+    // Start build
     const buildRes = await axios.post(
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
       { source_blob: { url: `${repo}/tarball/main` } },
@@ -94,6 +91,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
         const status = statusRes.data.status;
         res.write(`data: Build status: ${status}\n\n`);
 
+        // Fetch real-time Heroku logs
         if (statusRes.data.output_stream_url) {
           const logs = await axios.get(statusRes.data.output_stream_url);
           res.write(`data: ${logs.data}\n\n`);
@@ -128,15 +126,12 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   }
 });
 
-// -------------------- LIST BOTS (DATA.JSON ONLY) --------------------
-app.get("/bots", async (req, res) => {
-  const bots = readData();
-  res.json(bots);
+// -------------------- LIST BOTS --------------------
+app.get("/bots", (req, res) => {
+  res.json(readData());
 });
 
 // -------------------- DYNOS & APP MANAGEMENT --------------------
-
-// Restart dynos
 app.post("/restart/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
@@ -150,7 +145,6 @@ app.post("/restart/:appName", async (req, res) => {
   }
 });
 
-// Activate dynos
 app.post("/activate/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
@@ -166,7 +160,6 @@ app.post("/activate/:appName", async (req, res) => {
   }
 });
 
-// Update session ID
 app.post("/update-session/:appName", async (req, res) => {
   const { appName } = req.params;
   const { sessionId } = req.body;
@@ -192,7 +185,6 @@ app.post("/update-session/:appName", async (req, res) => {
   }
 });
 
-// Delete app
 app.delete("/delete/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
@@ -207,7 +199,7 @@ app.delete("/delete/:appName", async (req, res) => {
   }
 });
 
-// Get Heroku logs
+// Get Heroku logs URL (for front-end)
 app.get("/logs/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
