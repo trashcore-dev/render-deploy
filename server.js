@@ -8,7 +8,7 @@ app.use(cors());
 app.use(express.json());
 
 const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // add your GitHub PAT here
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // your GitHub PAT
 const DATA_FILE = "./data.json";
 
 if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify([]));
@@ -94,10 +94,13 @@ app.post("/deploy", async (req, res) => {
     res.json({ success: true, message: `✅ Bot "${appName}" deployed!`, app: info });
   } catch (err) {
     console.error(err.response?.data || err.message);
+    let errorMsg = err.response?.data?.message || err.response?.data || err.message;
+    if (err.response?.status) errorMsg = `HTTP ${err.response.status}: ${errorMsg}`;
+
     res.status(500).json({
       success: false,
-      message: "❌ Deployment failed.",
-      error: err.response?.data || err.message,
+      message: "❌ Deployment failed. See error below:",
+      error: errorMsg,
     });
   }
 });
