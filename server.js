@@ -126,9 +126,34 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   }
 });
 
-// -------------------- LIST BOTS --------------------
-app.get("/bots", (req, res) => {
-  res.json(readData());
+// -------------------- LIST BOTS (HEROKU API VERSION) --------------------
+app.get("/bots", async (req, res) => {
+  try {
+    const response = await axios.get("https://api.heroku.com/apps", {
+      headers: {
+        Authorization: `Bearer ${HEROKU_API_KEY}`,
+        Accept: "application/vnd.heroku+json; version=3"
+      }
+    });
+
+    const bots = response.data
+      .filter(app =>
+        app.name.startsWith("trashcore-") ||
+        app.name.startsWith("bot-") ||
+        app.name.startsWith("drexter-")
+      )
+      .map(app => ({
+        name: app.name,
+        url: `https://${app.name}.herokuapp.com`,
+        created_at: app.created_at,
+        updated_at: app.updated_at
+      }));
+
+    res.json({ success: true, count: bots.length, bots });
+  } catch (err) {
+    console.error("Error fetching Heroku apps:", err.response?.data || err.message);
+    res.status(500).json({ success: false, message: "❌ Failed to fetch bots" });
+  }
 });
 
 // -------------------- DYNOS & APP MANAGEMENT --------------------
