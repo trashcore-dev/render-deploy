@@ -7,7 +7,7 @@
   },
   "dependencies": {
     "axios": "latest",
-    "unzipper": "latest",
+    "adm-zip": "latest",
     "cors": "latest",
     "express": "latest",
     "os": "^0.1.1"
