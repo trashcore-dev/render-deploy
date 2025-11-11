@@ -56,7 +56,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 
   try {
     // 1️⃣ Create Heroku app
-    const appResp = await axios.post(
+    await axios.post(
       "https://api.heroku.com/apps",
       { name: sanitizedAppName },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
@@ -80,16 +80,12 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     const { put_url, get_url } = sourceResp.data.source_blob;
     res.write(`data: 📦 Source blob ready.\n\n`);
 
-    // 4️⃣ Download GitHub tarball
+    // 4️⃣ Upload tarball
     const tarball = await axios.get(repo, { responseType: "arraybuffer" });
-
-    // 5️⃣ Upload tarball to Heroku
-    await axios.put(put_url, tarball.data, {
-      headers: { "Content-Type": "application/octet-stream" } // Important fix
-    });
+    await axios.put(put_url, tarball.data, { headers: { "Content-Type": "application/octet-stream" } });
     res.write(`data: 📤 Tarball uploaded.\n\n`);
 
-    // 6️⃣ Trigger build
+    // 5️⃣ Trigger build
     const buildResp = await axios.post(
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
       { source_blob: { url: get_url, version: "main" } },
@@ -97,8 +93,9 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     );
 
     const buildId = buildResp.data.id;
+    res.write(`data: Build: pending ⏳\n\n`);
 
-    // 7️⃣ Poll build status
+    // 6️⃣ Poll build status
     const poll = setInterval(async () => {
       try {
         const statusRes = await axios.get(
@@ -107,13 +104,12 @@ app.get("/deploy/:appName/logs", async (req, res) => {
         );
 
         const status = statusRes.data.status;
-        res.write(`data: Build status: ${status}\n\n`);
 
         if (status === "succeeded" || status === "failed") {
           clearInterval(poll);
 
           if (status === "succeeded") {
-            // 8️⃣ Activate worker dyno only
+            // Activate worker dyno only
             await axios.patch(
               `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
               { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1 }] },
@@ -121,7 +117,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
             );
             res.write(`data: ⚙️ Worker dyno activated. Web dyno disabled.\n\n`);
 
-            // 9️⃣ Save app info locally
+            // Save app locally
             saveApp({
               name: sanitizedAppName,
               repo,
@@ -129,15 +125,17 @@ app.get("/deploy/:appName/logs", async (req, res) => {
               url: `https://${sanitizedAppName}.herokuapp.com`,
               date: new Date().toISOString()
             });
+
+            res.write(`data: ✅ Deployment succeeded!\n\n`);
+          } else {
+            res.write(`data: ❌ Deployment failed!\n\n`);
           }
 
-          res.write(`data: ✅ Deployment ${status}!\n\n`);
           res.end();
         }
       } catch (err) {
-        console.error(err.response?.data || err.message);
-        res.write(`data: ⚠️ Error fetching build logs.\n\n`);
         clearInterval(poll);
+        res.write(`data: ⚠️ Error checking build status.\n\n`);
         res.end();
       }
     }, 3000);
@@ -149,7 +147,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   }
 });
 
-// -------------------- LIST BOTS --------------------
+// -------------------- LIST BOTS (HEROKU API VERSION) --------------------
 app.get("/bots", async (req, res) => {
   try {
     const response = await axios.get("https://api.heroku.com/apps", {
