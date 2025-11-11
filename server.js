@@ -75,10 +75,11 @@ app.post("/deploy", async (req, res) => {
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
-    // Build from user's repo
+    // ✅ Use tarball instead of zip to fix Heroku build issue
+    const tarballUrl = `${repo}/tarball/main`;
     await axios.post(
       `https://api.heroku.com/apps/${appName}/builds`,
-      { source_blob: { url: `${repo}/archive/refs/heads/main.zip` } },
+      { source_blob: { url: tarballUrl } },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
