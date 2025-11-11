@@ -55,15 +55,15 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   res.flushHeaders();
 
   try {
-    // Step 1: Create Heroku app
-    const createRes = await axios.post(
+    // 1️⃣ Create Heroku app
+    const createApp = await axios.post(
       "https://api.heroku.com/apps",
       { name: sanitizedAppName },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
-    res.write(`data: ✅ App created: ${createRes.data.name}\n\n`);
+    res.write(`data: ✅ App created: ${sanitizedAppName}\n\n`);
 
-    // Step 2: Set SESSION_ID
+    // 2️⃣ Set SESSION_ID
     await axios.patch(
       `https://api.heroku.com/apps/${sanitizedAppName}/config-vars`,
       { SESSION_ID: sessionId },
@@ -71,20 +71,33 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     );
     res.write(`data: ✅ SESSION_ID configured.\n\n`);
 
-    // Step 3: Use tarball directly for source blob
-    const sourceUrl = repo || "https://github.com/Tennor-modz/trashcore-ultra/tarball/main";
-    res.write(`data: 📦 Source blob ready from tarball URL.\n\n`);
+    // 3️⃣ Get Heroku source blob
+    const sourceResp = await axios.post(
+      "https://api.heroku.com/sources",
+      {},
+      { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+    );
+    const { put_url, get_url } = sourceResp.data.source_blob;
+    res.write(`data: 📦 Source blob ready.\n\n`);
 
-    // Step 4: Trigger build
+    // 4️⃣ Download GitHub tarball
+    const tarball = await axios.get(`${repo}/tarball/main`, { responseType: "arraybuffer" });
+
+    // 5️⃣ Upload tarball to Heroku source
+    await axios.put(put_url, tarball.data, { headers: { "Content-Type": "" } });
+    res.write(`data: 📤 Tarball uploaded to Heroku source.\n\n`);
+
+    // 6️⃣ Trigger build
     const buildRes = await axios.post(
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
-      { source_blob: { url: sourceUrl, version: "main" } },
+      { source_blob: { url: get_url, version: "main" } },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
     const buildId = buildRes.data.id;
+    res.write(`data: 🏗️ Build triggered.\n\n`);
 
-    // Step 5: Poll build status
+    // 7️⃣ Poll build status
     const poll = setInterval(async () => {
       try {
         const statusRes = await axios.get(
@@ -100,35 +113,33 @@ app.get("/deploy/:appName/logs", async (req, res) => {
           res.write(`data: ✅ Deployment ${status}!\n\n`);
 
           if (status === "succeeded") {
-            // Step 6: Activate worker only
+            // 8️⃣ Activate worker only
             await axios.patch(
               `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
-              { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1, size: "basic" }] },
+              { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1 }] },
               { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
             );
-            res.write(`data: ⚙️ Worker dyno activated. Web dyno disabled.\n\n`);
 
-            // Step 7: Save bot locally
             saveApp({
               name: sanitizedAppName,
-              repo: sourceUrl,
+              repo,
               sessionId,
               url: `https://${sanitizedAppName}.herokuapp.com`,
               date: new Date().toISOString()
             });
 
-            res.write(`data: 🏷 App name: ${sanitizedAppName}\n\n`);
+            res.write(`data: 🚀 App deployed and worker activated: ${sanitizedAppName}\n\n`);
           }
 
           res.end();
         }
       } catch (err) {
         console.error(err.response?.data || err.message);
-        res.write(`data: ⚠️ Error polling build status.\n\n`);
+        res.write(`data: ⚠️ Error fetching build status.\n\n`);
         clearInterval(poll);
         res.end();
       }
-    }, 3000);
+    }, 5000);
 
   } catch (err) {
     console.error(err.response?.data || err.message);
@@ -146,16 +157,11 @@ app.get("/bots", async (req, res) => {
 
     const bots = response.data
       .filter(app => app.name.startsWith("trashcore-") || app.name.startsWith("bot-") || app.name.startsWith("drexter-"))
-      .map(app => ({
-        name: app.name,
-        url: `https://${app.name}.herokuapp.com`,
-        created_at: app.created_at,
-        updated_at: app.updated_at
-      }));
+      .map(app => ({ name: app.name, url: `https://${app.name}.herokuapp.com`, created_at: app.created_at, updated_at: app.updated_at }));
 
     res.json({ success: true, count: bots.length, bots });
   } catch (err) {
-    console.error(err.response?.data || err.message);
+    console.error("Error fetching Heroku apps:", err.response?.data || err.message);
     res.status(500).json({ success: false, message: "❌ Failed to fetch bots" });
   }
 });
@@ -228,7 +234,6 @@ app.delete("/delete/:appName", async (req, res) => {
   }
 });
 
-// Get Heroku logs URL
 app.get("/logs/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
