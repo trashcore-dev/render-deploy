@@ -4,7 +4,7 @@ const fs = require("fs");
 const cors = require("cors");
 
 const app = express();
-app.use(cors()); // allow frontend requests
+app.use(cors());
 app.use(express.json());
 
 const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
@@ -42,30 +42,45 @@ app.post("/deploy", async (req, res) => {
     }
 
     // Create Heroku app
-    await axios.post("https://api.heroku.com/apps", { name: appName }, {
-      headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" }
-    });
+    await axios.post(
+      "https://api.heroku.com/apps",
+      { name: appName },
+      { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+    );
 
     // Set session ID
-    await axios.patch(`https://api.heroku.com/apps/${appName}/config-vars`,
+    await axios.patch(
+      `https://api.heroku.com/apps/${appName}/config-vars`,
       { SESSION_ID: sessionId },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
     // Build from user's repo
-    await axios.post(`https://api.heroku.com/apps/${appName}/builds`,
+    await axios.post(
+      `https://api.heroku.com/apps/${appName}/builds`,
       { source_blob: { url: `${repo}/archive/refs/heads/main.zip` } },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
     // Save to data.json
-    const info = { name: appName, repo, sessionId, url: `https://${appName}.herokuapp.com`, date: new Date().toISOString() };
+    const info = {
+      name: appName,
+      repo,
+      sessionId,
+      url: `https://${appName}.herokuapp.com`,
+      date: new Date().toISOString(),
+    };
     saveApp(info);
 
     res.json({ success: true, message: `✅ Bot "${appName}" deployed!`, app: info });
   } catch (err) {
+    // 🔹 Log and return full error
     console.error(err.response?.data || err.message);
-    res.status(500).json({ success: false, message: "❌ Deployment failed." });
+    res.status(500).json({
+      success: false,
+      message: "❌ Deployment failed.",
+      error: err.response?.data || err.message,
+    });
   }
 });
 
