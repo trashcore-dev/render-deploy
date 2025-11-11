@@ -13,14 +13,8 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 const HEROKU_API_KEY = process.env.HEROKU_API_KEY || "YOUR_HEROKU_API_KEY";
 
-// ---------- Middleware ----------
 app.use(bodyParser.json());
 app.use(express.static("public"));
-
-// ---------- Helper: broadcast new bots ----------
-function broadcastUpdate(bot) {
-  io.emit("newBot", bot);
-}
 
 // ---------- Dashboard ----------
 app.get("/", (req, res) => {
@@ -53,17 +47,16 @@ app.get("/bots", async (req, res) => {
   }
 });
 
-// ---------- Deploy New Bot ----------
+// ---------- Deploy Bot ----------
 app.post("/deploy", async (req, res) => {
-  const { repoUrl, sessionId } = req.body;
-  const appName = `trashcore-${Date.now()}`;
+  const { repoUrl, sessionId, appName: customName } = req.body;
+  const appName = customName ? customName.toLowerCase().replace(/[^a-z0-9-]/g, "-") : `trashcore-${Date.now()}`;
 
   try {
-    // Respond immediately to prevent timeout
     res.json({ success: true, message: "🚀 Deployment started...", appName });
 
     (async () => {
-      console.log(`⚙️ Creating Heroku app ${appName}`);
+      io.emit("log", `[INFO] Creating Heroku app: ${appName}`);
 
       // Create app
       await axios.post(
@@ -77,7 +70,9 @@ app.post("/deploy", async (req, res) => {
         }
       );
 
-      // Set session ID
+      io.emit("log", `[INFO] App ${appName} created`);
+
+      // Set SESSION_ID
       await axios.patch(
         `https://api.heroku.com/apps/${appName}/config-vars`,
         { SESSION_ID: sessionId || "none" },
@@ -89,7 +84,9 @@ app.post("/deploy", async (req, res) => {
         }
       );
 
-      // Upload repo
+      io.emit("log", `[INFO] SESSION_ID set`);
+
+      // Get Heroku source URLs
       const source = await axios.post(
         "https://api.heroku.com/sources",
         {},
@@ -101,82 +98,54 @@ app.post("/deploy", async (req, res) => {
         }
       );
 
-      const repoZip = await axios.get(`${repoUrl}/archive/refs/heads/main.zip`, {
-        responseType: "arraybuffer",
-      });
+      const zipRes = await axios.get(`${repoUrl}/archive/refs/heads/main.zip`, { responseType: "arraybuffer" });
+      await axios.put(source.data.source_blob.put_url, zipRes.data, { headers: { "Content-Type": "" } });
 
-      await axios.put(source.data.source_blob.put_url, repoZip.data, {
-        headers: { "Content-Type": "" },
-      });
+      io.emit("log", `[INFO] Repo uploaded, starting build...`);
 
       // Start build
       const build = await axios.post(
         `https://api.heroku.com/apps/${appName}/builds`,
-        {
-          source_blob: { url: source.data.source_blob.get_url, version: "main" },
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${HEROKU_API_KEY}`,
-            Accept: "application/vnd.heroku+json; version=3",
-          },
-        }
+        { source_blob: { url: source.data.source_blob.get_url, version: "main" } },
+        { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
       );
 
       const buildId = build.data.id;
-      console.log(`📦 Build started for ${appName}...`);
 
       const poll = setInterval(async () => {
-        const buildStatus = await axios.get(
-          `https://api.heroku.com/apps/${appName}/builds/${buildId}`,
-          {
-            headers: {
-              Authorization: `Bearer ${HEROKU_API_KEY}`,
-              Accept: "application/vnd.heroku+json; version=3",
-            },
+        try {
+          const statusRes = await axios.get(`https://api.heroku.com/apps/${appName}/builds/${buildId}`, {
+            headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" },
+          });
+
+          const status = statusRes.data.status;
+          io.emit("log", `[BUILD] Status: ${status}`);
+
+          if (status === "succeeded" || status === "failed") {
+            clearInterval(poll);
+
+            if (status === "succeeded") {
+              // Worker-only dyno
+              await axios.patch(
+                `https://api.heroku.com/apps/${appName}/formation`,
+                { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1 }] },
+                { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+              );
+
+              io.emit("log", `[SUCCESS] ${appName} deployed as worker only`);
+              io.emit("newBot", { name: appName, sessionId, url: `https://${appName}.herokuapp.com` });
+            } else {
+              io.emit("log", `[ERROR] Build failed for ${appName}`);
+            }
           }
-        );
-
-        const status = buildStatus.data.status;
-        console.log(`🔍 Build status [${appName}]: ${status}`);
-
-        if (status === "succeeded" || status === "failed") {
-          clearInterval(poll);
-
-          if (status === "succeeded") {
-            // Disable web, enable worker
-            await axios.patch(
-              `https://api.heroku.com/apps/${appName}/formation`,
-              {
-                updates: [
-                  { type: "web", quantity: 0 },
-                  { type: "worker", quantity: 1 },
-                ],
-              },
-              {
-                headers: {
-                  Authorization: `Bearer ${HEROKU_API_KEY}`,
-                  Accept: "application/vnd.heroku+json; version=3",
-                },
-              }
-            );
-
-            console.log(`✅ ${appName} deployed successfully`);
-            broadcastUpdate({
-              name: appName,
-              url: `https://${appName}.herokuapp.com`,
-              sessionId,
-              created_at: new Date().toISOString(),
-            });
-          } else {
-            console.log(`❌ Build failed for ${appName}`);
-          }
+        } catch (err) {
+          io.emit("log", `[ERROR] Polling build failed: ${err.message}`);
         }
       }, 5000);
     })();
   } catch (err) {
     console.error("Deployment failed:", err.message);
-    res.status(500).json({ success: false, message: "Deployment failed" });
+    io.emit("log", `[ERROR] Deployment failed: ${err.message}`);
   }
 });
 
@@ -185,10 +154,7 @@ app.post("/restart/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
     await axios.delete(`https://api.heroku.com/apps/${appName}/dynos`, {
-      headers: {
-        Authorization: `Bearer ${HEROKU_API_KEY}`,
-        Accept: "application/vnd.heroku+json; version=3",
-      },
+      headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" },
     });
     res.json({ success: true, message: `🔁 Restarted ${appName}` });
   } catch (err) {
@@ -202,10 +168,7 @@ app.delete("/delete/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
     await axios.delete(`https://api.heroku.com/apps/${appName}`, {
-      headers: {
-        Authorization: `Bearer ${HEROKU_API_KEY}`,
-        Accept: "application/vnd.heroku+json; version=3",
-      },
+      headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" },
     });
     res.json({ success: true, message: `🗑 Deleted ${appName}` });
   } catch (err) {
@@ -214,12 +177,10 @@ app.delete("/delete/:appName", async (req, res) => {
   }
 });
 
-// ---------- Socket.IO Connection ----------
+// ---------- Socket.IO ----------
 io.on("connection", socket => {
   console.log("🟢 Dashboard connected");
 });
 
 // ---------- Start Server ----------
-server.listen(PORT, () =>
-  console.log(`🚀 Drexter AI Dashboard running on http://localhost:${PORT}`)
-);
+server.listen(PORT, () => console.log(`🚀 Dashboard running on http://localhost:${PORT}`));
