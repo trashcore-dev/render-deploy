@@ -79,19 +79,21 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 
     res.write(`data: ✅ SESSION_ID configured.\n\n`);
 
-    // Generate Heroku source URLs
+    // Upload source
     const source = await axios.post(
       "https://api.heroku.com/sources",
       {},
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
-    // Fetch tarball from GitHub instead of ZIP
-    const tarballUrl = `${repo}/archive/refs/heads/main.tar.gz`;
-    const tarballData = await axios.get(tarballUrl, { responseType: "arraybuffer" });
-    await axios.put(source.data.source_blob.put_url, tarballData.data, { headers: { "Content-Type": "application/octet-stream" } });
+    // Ensure repo URL has no spaces
+    const tarballUrl = `${repo.replace(/\s/g, "")}/archive/refs/heads/main.tar.gz`;
 
-    res.write(`data: 📦 Repo uploaded (tarball).\n\n`);
+    await axios.put(source.data.source_blob.put_url, tarballUrl, {
+      headers: { "Content-Type": "application/octet-stream" },
+    });
+
+    res.write(`data: 📦 Repo tarball uploaded.\n\n`);
 
     // Start build
     const build = await axios.post(
