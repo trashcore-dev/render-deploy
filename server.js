@@ -94,7 +94,7 @@ app.post("/deploy", async (req, res) => {
     res.json({ success: true, message: `✅ Bot "${appName}" deployed!`, app: info });
   } catch (err) {
     console.error(err.response?.data || err.message);
-    let errorMsg = err.response?.data?.message || err.response?.data || err.message;
+    let errorMsg = err.response?.data?.message || JSON.stringify(err.response?.data) || err.message;
     if (err.response?.status) errorMsg = `HTTP ${err.response.status}: ${errorMsg}`;
 
     res.status(500).json({
