@@ -1,4 +1,3 @@
-
 const express = require("express");
 const axios = require("axios");
 const fs = require("fs");
@@ -56,15 +55,15 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   res.flushHeaders();
 
   try {
-    // Create Heroku app
-    await axios.post(
+    // Step 1: Create Heroku app
+    const createRes = await axios.post(
       "https://api.heroku.com/apps",
       { name: sanitizedAppName },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
-    res.write(`data: ✅ App created: ${sanitizedAppName}\n\n`);
+    res.write(`data: ✅ App created: ${createRes.data.name}\n\n`);
 
-    // Set SESSION_ID
+    // Step 2: Set SESSION_ID
     await axios.patch(
       `https://api.heroku.com/apps/${sanitizedAppName}/config-vars`,
       { SESSION_ID: sessionId },
@@ -72,16 +71,34 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     );
     res.write(`data: ✅ SESSION_ID configured.\n\n`);
 
-    // Start build
+    // Step 3: Get source_blob URLs
+    const sourceRes = await axios.post(
+      "https://api.heroku.com/sources",
+      {},
+      { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+    );
+
+    const { put_url, get_url } = sourceRes.data.source_blob;
+    res.write(`data: 📦 Source blob ready.\n\n`);
+
+    // Step 4: Download GitHub repo ZIP
+    const repoZip = await axios.get(`${repo}/archive/refs/heads/main.zip`, { responseType: "arraybuffer" });
+
+    // Step 5: Upload ZIP to Heroku
+    await axios.put(put_url, repoZip.data, { headers: { "Content-Type": "application/octet-stream" } });
+    res.write(`data: 🗂️ Repo uploaded to Heroku source.\n\n`);
+
+    // Step 6: Trigger build
     const buildRes = await axios.post(
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
-      { source_blob: { url: `${repo}/tarball/main` } },
+      { source_blob: { url: get_url, version: "main" } },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
     const buildId = buildRes.data.id;
+    res.write(`data: 🏗️ Build triggered for app: ${sanitizedAppName}\n\n`);
 
-    // Poll build status
+    // Step 7: Poll build status
     const poll = setInterval(async () => {
       try {
         const statusRes = await axios.get(
@@ -92,16 +109,20 @@ app.get("/deploy/:appName/logs", async (req, res) => {
         const status = statusRes.data.status;
         res.write(`data: Build status: ${status}\n\n`);
 
-        // Fetch real-time Heroku logs
-        if (statusRes.data.output_stream_url) {
-          const logs = await axios.get(statusRes.data.output_stream_url);
-          res.write(`data: ${logs.data}\n\n`);
-        }
-
         if (status === "succeeded" || status === "failed") {
           clearInterval(poll);
-          res.write(`data: ✅ Deployment ${status}!\n\n`);
+          res.write(`data: ✅ Deployment ${status} for app: ${sanitizedAppName}!\n\n`);
+
           if (status === "succeeded") {
+            // Activate only worker dyno
+            await axios.patch(
+              `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
+              { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1, size: "basic" }] },
+              { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+            );
+            res.write(`data: ⚙️ Worker dyno activated, web dyno disabled.\n\n`);
+
+            // Save to data.json
             saveApp({
               name: sanitizedAppName,
               repo,
@@ -110,6 +131,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
               date: new Date().toISOString()
             });
           }
+
           res.end();
         }
       } catch (err) {
@@ -127,14 +149,11 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   }
 });
 
-// -------------------- LIST BOTS (HEROKU API VERSION) --------------------
+// -------------------- LIST BOTS --------------------
 app.get("/bots", async (req, res) => {
   try {
     const response = await axios.get("https://api.heroku.com/apps", {
-      headers: {
-        Authorization: `Bearer ${HEROKU_API_KEY}`,
-        Accept: "application/vnd.heroku+json; version=3"
-      }
+      headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" }
     });
 
     const bots = response.data
