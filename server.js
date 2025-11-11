@@ -56,6 +56,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 
   try {
     res.write(`data: ✅ Creating app ${sanitizedAppName}...\n\n`);
+
     // Create Heroku app
     await axios.post(
       "https://api.heroku.com/apps",
@@ -86,10 +87,12 @@ app.get("/deploy/:appName/logs", async (req, res) => {
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
-    // Ensure repo URL has no spaces
+    // Download repo tarball
     const tarballUrl = `${repo.replace(/\s/g, "")}/archive/refs/heads/main.tar.gz`;
+    const tarData = await axios.get(tarballUrl, { responseType: "arraybuffer" });
 
-    await axios.put(source.data.source_blob.put_url, tarballUrl, {
+    // Upload to Heroku
+    await axios.put(source.data.source_blob.put_url, tarData.data, {
       headers: { "Content-Type": "application/octet-stream" },
     });
 
@@ -114,34 +117,50 @@ app.get("/deploy/:appName/logs", async (req, res) => {
         const status = statusRes.data.status;
         res.write(`data: Build status: ${status}\n\n`);
 
-        if (status === "succeeded" || status === "failed") {
+        if (status === "succeeded") {
           clearInterval(poll);
 
-          if (status === "succeeded") {
-            // Disable web dyno, enable worker dyno
-            await axios.patch(
-              `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
-              { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1 }] },
-              { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
-            );
+          // Disable web dyno, enable worker dyno
+          await axios.patch(
+            `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
+            { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1 }] },
+            { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+          );
 
-            res.write(`data: ✅ Deployment succeeded!\n\n`);
-          } else {
-            res.write(`data: ❌ Deployment failed!\n\n`);
+          res.write(`data: ✅ Deployment succeeded!\n\n`);
+          res.end();
+
+        } else if (status === "failed") {
+          clearInterval(poll);
+
+          // Fetch full build logs
+          let buildLogs = "";
+          if (statusRes.data.output_stream_url) {
+            try {
+              const logsRes = await axios.get(statusRes.data.output_stream_url);
+              buildLogs = logsRes.data;
+            } catch {
+              buildLogs = "⚠️ Failed to fetch build logs.";
+            }
           }
 
+          res.write(`data: ❌ Deployment failed!\n\n`);
+          res.write(`data: 🔍 Build logs:\n${buildLogs}\n\n`);
           res.end();
         }
+
       } catch (err) {
-        console.error(err.response?.data || err.message);
-        res.write(`data: ⚠️ Error fetching build status.\n\n`);
         clearInterval(poll);
+        const errorMsg = err.response?.data || err.message || "Unknown error";
+        res.write(`data: ⚠️ Error fetching build status: ${JSON.stringify(errorMsg)}\n\n`);
         res.end();
       }
     }, 4000);
+
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.write(`data: ❌ Deployment failed.\n\n`);
+    const errorMsg = err.response?.data || err.message || "Unknown error";
+    res.write(`data: ❌ Deployment failed!\n\n`);
+    res.write(`data: ⚠️ Error: ${JSON.stringify(errorMsg)}\n\n`);
     res.end();
   }
 });
