@@ -1,7 +1,7 @@
 const express = require("express");
 const axios = require("axios");
-const cors = require("cors");
 const path = require("path");
+const cors = require("cors");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -79,23 +79,22 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 
     res.write(`data: ✅ SESSION_ID configured.\n\n`);
 
-    // Prepare Heroku source
+    // Upload source
     const source = await axios.post(
       "https://api.heroku.com/sources",
       {},
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
-    // Fetch tarball from GitHub
-    res.write(`data: ⏳ Fetching tarball from GitHub...\n\n`);
-    const tarballData = await axios.get(repo, { responseType: "arraybuffer" });
+    // Fetch the tarball from GitHub
+    const tarballResponse = await axios.get(repo, { responseType: "arraybuffer" });
 
-    // Upload tarball to Heroku
-    res.write(`data: ⏳ Uploading tarball to Heroku...\n\n`);
-    await axios.put(source.data.source_blob.put_url, tarballData.data, {
+    // Upload the tarball content to Heroku's signed URL
+    await axios.put(source.data.source_blob.put_url, tarballResponse.data, {
       headers: { "Content-Type": "application/octet-stream" },
     });
-    res.write(`data: 📦 Tarball uploaded.\n\n`);
+
+    res.write(`data: 📦 Repo tarball uploaded.\n\n`);
 
     // Start build
     const build = await axios.post(
@@ -107,12 +106,12 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     const buildId = build.data.id;
     res.write(`data: 🔨 Build started...\n\n`);
 
-    // Poll build status
     const poll = setInterval(async () => {
       try {
-        const statusRes = await axios.get(`https://api.heroku.com/apps/${sanitizedAppName}/builds/${buildId}`, {
-          headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" },
-        });
+        const statusRes = await axios.get(
+          `https://api.heroku.com/apps/${sanitizedAppName}/builds/${buildId}`,
+          { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+        );
 
         const status = statusRes.data.status;
         res.write(`data: Build status: ${status}\n\n`);
@@ -130,10 +129,13 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 
             res.write(`data: ✅ Deployment succeeded!\n\n`);
           } else {
-            res.write(`data: ❌ Deployment failed!\n\n`);
-            // Include Heroku error messages if available
-            if (statusRes.data.output_stream_url) {
-              res.write(`data: ⚠️ Check build logs: ${statusRes.data.output_stream_url}\n\n`);
+            // Include the detailed build output if failed
+            const outputUrl = statusRes.data.output_stream_url;
+            if (outputUrl) {
+              const outputRes = await axios.get(outputUrl);
+              res.write(`data: ❌ Deployment failed. Logs:\n${outputRes.data}\n\n`);
+            } else {
+              res.write(`data: ❌ Deployment failed. No logs available.\n\n`);
             }
           }
 
@@ -141,14 +143,14 @@ app.get("/deploy/:appName/logs", async (req, res) => {
         }
       } catch (err) {
         console.error(err.response?.data || err.message);
-        res.write(`data: ⚠️ Error fetching build status: ${JSON.stringify(err.response?.data || err.message)}\n\n`);
+        res.write(`data: ⚠️ Error fetching build status: ${err.response?.data || err.message}\n\n`);
         clearInterval(poll);
         res.end();
       }
     }, 4000);
   } catch (err) {
     console.error(err.response?.data || err.message);
-    res.write(`data: ❌ Deployment failed: ${JSON.stringify(err.response?.data || err.message)}\n\n`);
+    res.write(`data: ❌ Deployment failed: ${err.response?.data?.message || err.message}\n\n`);
     res.end();
   }
 });
