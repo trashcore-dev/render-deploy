@@ -8,7 +8,7 @@ app.use(cors());
 app.use(express.json());
 
 const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // your GitHub PAT
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN; // GitHub Personal Access Token
 const DATA_FILE = "./data.json";
 
 if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify([]));
@@ -19,7 +19,7 @@ function saveApp(appInfo) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
 }
 
-// Simple in-memory cache for fork verification
+// In-memory cache for fork verification
 const forkCache = {};
 
 async function checkFork(owner, repoName) {
@@ -36,7 +36,7 @@ async function checkFork(owner, repoName) {
     forkCache[key] = isAllowed;
     return isAllowed;
   } catch (err) {
-    console.error("GitHub API error:", err.response?.data || err.message);
+    console.error("🚨 GitHub API error:", err.response?.data || err.message); // Logs to Render
     forkCache[key] = false;
     return false;
   }
@@ -93,14 +93,13 @@ app.post("/deploy", async (req, res) => {
 
     res.json({ success: true, message: `✅ Bot "${appName}" deployed!`, app: info });
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    let errorMsg = err.response?.data?.message || JSON.stringify(err.response?.data) || err.message;
-    if (err.response?.status) errorMsg = `HTTP ${err.response.status}: ${errorMsg}`;
+    // 🔹 Log full error to Render logs
+    console.error("🚨 Deployment Error:", err.response?.data || err.message);
 
+    // Minimal message to frontend
     res.status(500).json({
       success: false,
-      message: "❌ Deployment failed. See error below:",
-      error: errorMsg,
+      message: "❌ Deployment failed. Check server logs for details."
     });
   }
 });
