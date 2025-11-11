@@ -8,44 +8,40 @@ app.use(cors());
 app.use(express.json());
 
 const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const DATA_FILE = "./data.json";
 
+// Ensure data.json exists
 if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify([]));
 
-// Save or update app info locally
-function saveApp(appInfo) {
-  const data = JSON.parse(fs.readFileSync(DATA_FILE));
-  const idx = data.findIndex(a => a.name === appInfo.name);
-  if (idx !== -1) data[idx] = appInfo;
-  else data.push(appInfo);
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
-
-// In-memory cache for fork verification
-const forkCache = {};
-async function checkFork(owner, repoName) {
-  const key = `${owner}/${repoName}`;
-  if (forkCache[key] !== undefined) return forkCache[key];
-
+// -------------------- DATA.JSON HELPERS --------------------
+function readData() {
   try {
-    const res = await axios.get(`https://api.github.com/repos/${owner}/${repoName}`, {
-      headers: { Authorization: `token ${GITHUB_TOKEN}` }
-    });
-    const repoData = res.data;
-    const isAllowed = repoData.fork || owner === "Tennor-modz";
-    forkCache[key] = isAllowed;
-    return isAllowed;
-  } catch (err) {
-    console.error("🚨 GitHub API error:", err.response?.data || err.message);
-    forkCache[key] = false;
-    return false;
+    return JSON.parse(fs.readFileSync(DATA_FILE));
+  } catch {
+    return [];
   }
 }
 
-// Sanitize app name
+function writeData(data) {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+function saveApp(appInfo) {
+  const data = readData();
+  const idx = data.findIndex(a => a.name === appInfo.name);
+  if (idx !== -1) data[idx] = { ...data[idx], ...appInfo };
+  else data.push(appInfo);
+  writeData(data);
+}
+
+function deleteLocalApp(name) {
+  const data = readData();
+  writeData(data.filter(b => b.name !== name));
+}
+
+// -------------------- SANITIZE APP NAME --------------------
 function sanitizeAppName(name) {
-  return name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '').replace(/--+/g, '-');
+  return name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "").replace(/--+/g, "-");
 }
 
 // -------------------- DEPLOY BOT --------------------
@@ -68,7 +64,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
       { name: sanitizedAppName },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
-    res.write(`data: ✅ Heroku app created: ${sanitizedAppName}\n\n`);
+    res.write(`data: ✅ Trash app created: ${sanitizedAppName}\n\n`);
 
     // 2️⃣ Set SESSION_ID
     await axios.patch(
@@ -132,28 +128,10 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   }
 });
 
-// -------------------- LIST BOTS --------------------
+// -------------------- LIST BOTS (DATA.JSON ONLY) --------------------
 app.get("/bots", async (req, res) => {
-  const localBots = JSON.parse(fs.readFileSync(DATA_FILE));
-  try {
-    const herokuRes = await axios.get("https://api.heroku.com/apps", {
-      headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" }
-    });
-
-    const merged = herokuRes.data.map(app => {
-      const local = localBots.find(b => b.name === app.name) || {};
-      return {
-        name: app.name,
-        repo: local.repo || "Unknown",
-        sessionId: local.sessionId || "Not Set",
-        url: `https://${app.name}.herokuapp.com`,
-        date: local.date || app.created_at
-      };
-    });
-    res.json(merged);
-  } catch {
-    res.json(localBots);
-  }
+  const bots = readData();
+  res.json(bots);
 });
 
 // -------------------- DYNOS & APP MANAGEMENT --------------------
@@ -200,9 +178,12 @@ app.post("/update-session/:appName", async (req, res) => {
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
-    const data = JSON.parse(fs.readFileSync(DATA_FILE));
+    const data = readData();
     const idx = data.findIndex(b => b.name === appName);
-    if (idx !== -1) { data[idx].sessionId = sessionId; fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2)); }
+    if (idx !== -1) {
+      data[idx].sessionId = sessionId;
+      writeData(data);
+    }
 
     res.json({ success: true, message: `✅ Session ID updated for ${appName}` });
   } catch (err) {
@@ -218,8 +199,7 @@ app.delete("/delete/:appName", async (req, res) => {
     await axios.delete(`https://api.heroku.com/apps/${appName}`, {
       headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" }
     });
-    const data = JSON.parse(fs.readFileSync(DATA_FILE));
-    fs.writeFileSync(DATA_FILE, JSON.stringify(data.filter(b => b.name !== appName), null, 2));
+    deleteLocalApp(appName);
     res.json({ success: true, message: `🗑 App "${appName}" deleted successfully.` });
   } catch (err) {
     console.error(err.response?.data || err.message);
