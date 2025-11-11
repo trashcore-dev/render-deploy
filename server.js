@@ -1,48 +1,22 @@
 const express = require("express");
 const axios = require("axios");
-const path = require("path");
+const fs = require("fs");
 const cors = require("cors");
+const path = require("path");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-const HEROKU_API_KEY = process.env.HEROKU_API_KEY || "YOUR_HEROKU_API_KEY";
-
-app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use(cors());
+
+const HEROKU_API_KEY = process.env.HEROKU_API_KEY || "your_heroku_api_key_here";
+const PORT = process.env.PORT || 3000;
 
 // -------------------- Helpers --------------------
 function sanitizeAppName(name) {
   return name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/--+/g, "-");
 }
 
-// -------------------- List Bots --------------------
-app.get("/bots", async (req, res) => {
-  try {
-    const response = await axios.get("https://api.heroku.com/apps", {
-      headers: {
-        Authorization: `Bearer ${HEROKU_API_KEY}`,
-        Accept: "application/vnd.heroku+json; version=3",
-      },
-    });
-
-    const bots = response.data
-      .filter((app) => app.name.startsWith("trashcore-") || app.name.startsWith("bot-"))
-      .map((app) => ({
-        name: app.name,
-        url: `https://${app.name}.herokuapp.com`,
-        created_at: app.created_at,
-        updated_at: app.updated_at,
-      }));
-
-    res.json(bots);
-  } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({ success: false, message: "Failed to fetch bots" });
-  }
-});
-
-// -------------------- Deploy Bot --------------------
+// -------------------- Deploy Bot with SSE Logs --------------------
 app.get("/deploy/:appName/logs", async (req, res) => {
   const { appName } = req.params;
   const { repo, sessionId } = req.query;
@@ -53,134 +27,107 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   res.setHeader("Connection", "keep-alive");
   res.flushHeaders();
 
-  try {
-    res.write(`data: ✅ Creating app ${sanitizedAppName}...\n\n`);
+  const log = (msg) => {
+    res.write(`data: ${msg}\n\n`);
+  };
 
-    // Create Heroku app
-    await axios.post(
+  try {
+    log(`⏳ Creating app ${sanitizedAppName}...`);
+
+    // Step 1: Create Heroku app
+    const createApp = await axios.post(
       "https://api.heroku.com/apps",
       { name: sanitizedAppName },
-      {
-        headers: {
-          Authorization: `Bearer ${HEROKU_API_KEY}`,
-          Accept: "application/vnd.heroku+json; version=3",
-        },
-      }
+      { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
+    log(`✅ App created!`);
 
-    res.write(`data: ✅ App created!\n\n`);
-
-    // Set SESSION_ID
+    // Step 2: Set SESSION_ID
     await axios.patch(
       `https://api.heroku.com/apps/${sanitizedAppName}/config-vars`,
       { SESSION_ID: sessionId || "none" },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
+    log(`✅ SESSION_ID configured.`);
 
-    res.write(`data: ✅ SESSION_ID configured.\n\n`);
-
-    // Upload source
-    const source = await axios.post(
+    // Step 3: Get Heroku source blob URLs
+    const sourceResp = await axios.post(
       "https://api.heroku.com/sources",
       {},
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
+    const sourceBlob = sourceResp.data.source_blob;
+    log(`📦 Source blob URLs received.`);
 
-    // Fetch the tarball from GitHub
-    const tarballResponse = await axios.get(repo, { responseType: "arraybuffer" });
+    // Step 4: Download repo zip and upload to Heroku
+    log(`⏳ Downloading repo from GitHub...`);
+    const repoZip = await axios.get(`${repo}/archive/refs/heads/main.zip`, { responseType: "arraybuffer" });
+    log(`📤 Uploading repo to Heroku...`);
+    await axios.put(sourceBlob.put_url, repoZip.data, { headers: { "Content-Type": "" } });
+    log(`✅ Repo uploaded.`);
 
-    // Upload the tarball content to Heroku's signed URL
-    await axios.put(source.data.source_blob.put_url, tarballResponse.data, {
-      headers: { "Content-Type": "application/octet-stream" },
-    });
-
-    res.write(`data: 📦 Repo tarball uploaded.\n\n`);
-
-    // Start build
-    const build = await axios.post(
+    // Step 5: Trigger build
+    const buildResp = await axios.post(
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
-      { source_blob: { url: source.data.source_blob.get_url } },
+      { source_blob: { url: sourceBlob.get_url, version: "main" } },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
+    const buildId = buildResp.data.id;
+    log(`🔨 Build triggered...`);
 
-    const buildId = build.data.id;
-    res.write(`data: 🔨 Build started...\n\n`);
-
+    // Step 6: Poll build status
     const poll = setInterval(async () => {
       try {
-        const statusRes = await axios.get(
+        const statusResp = await axios.get(
           `https://api.heroku.com/apps/${sanitizedAppName}/builds/${buildId}`,
           { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
         );
 
-        const status = statusRes.data.status;
-        res.write(`data: Build status: ${status}\n\n`);
+        const status = statusResp.data.status;
+        log(`📊 Build status: ${status}`);
 
         if (status === "succeeded" || status === "failed") {
           clearInterval(poll);
 
           if (status === "succeeded") {
-            // Disable web dyno, enable worker dyno
+            log("✅ Deployment succeeded!");
+
+            // Step 7: Activate worker only
             await axios.patch(
               `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
               { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1 }] },
               { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
             );
 
-            res.write(`data: ✅ Deployment succeeded!\n\n`);
+            log("⚙️ Worker dyno activated. Web dyno disabled.");
           } else {
-            // Include the detailed build output if failed
-            const outputUrl = statusRes.data.output_stream_url;
-            if (outputUrl) {
-              const outputRes = await axios.get(outputUrl);
-              res.write(`data: ❌ Deployment failed. Logs:\n${outputRes.data}\n\n`);
-            } else {
-              res.write(`data: ❌ Deployment failed. No logs available.\n\n`);
-            }
+            log("❌ Deployment failed! Check Heroku logs for details.");
           }
 
           res.end();
         }
       } catch (err) {
-        console.error(err.response?.data || err.message);
-        res.write(`data: ⚠️ Error fetching build status: ${err.response?.data || err.message}\n\n`);
+        log(`⚠️ Error fetching build status: ${err.response?.data || err.message}`);
         clearInterval(poll);
         res.end();
       }
-    }, 4000);
+    }, 5000);
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.write(`data: ❌ Deployment failed: ${err.response?.data?.message || err.message}\n\n`);
+    log(`❌ Deployment error: ${err.response?.data || err.message}`);
     res.end();
   }
 });
 
-// -------------------- Restart Bot --------------------
-app.post("/restart/:appName", async (req, res) => {
-  const { appName } = req.params;
+// -------------------- List Bots --------------------
+app.get("/bots", (req, res) => {
   try {
-    await axios.delete(`https://api.heroku.com/apps/${appName}/dynos`, {
-      headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" },
-    });
-    res.json({ success: true, message: `🔁 Restarted ${appName}` });
+    const botsData = fs.existsSync("./data.json")
+      ? JSON.parse(fs.readFileSync("./data.json", "utf8"))
+      : [];
+    res.json(botsData);
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({ success: false, message: "Restart failed" });
+    res.status(500).json({ success: false, message: "Error reading bots data" });
   }
 });
 
-// -------------------- Delete Bot --------------------
-app.delete("/delete/:appName", async (req, res) => {
-  const { appName } = req.params;
-  try {
-    await axios.delete(`https://api.heroku.com/apps/${appName}`, {
-      headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" },
-    });
-    res.json({ success: true, message: `🗑 Deleted ${appName}` });
-  } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({ success: false, message: "Delete failed" });
-  }
-});
-
-app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
