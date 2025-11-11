@@ -2,6 +2,7 @@ const express = require("express");
 const axios = require("axios");
 const fs = require("fs");
 const cors = require("cors");
+const AdmZip = require("adm-zip"); // For reading Procfile from tarball
 const path = require("path");
 
 const app = express();
@@ -42,26 +43,33 @@ function sanitizeAppName(name) {
   return name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "").replace(/--+/g, "-");
 }
 
-// -------------------- FIX TARBALL URL --------------------
-function fixTarballURL(url) {
-  if (!url) return null;
-  if (url.includes("github.com") && !url.includes("codeload.github.com")) {
-    // Transform GitHub repo URL to direct tar.gz download
-    const m = url.match(/github\.com\/([^/]+)\/([^/]+)(\/|$)/);
-    if (!m) return url;
-    const user = m[1], repo = m[2];
-    return `https://codeload.github.com/${user}/${repo}/tar.gz/main`;
+// -------------------- DETECT PROCFILE --------------------
+async function detectProcfileRoles(tarballUrl) {
+  try {
+    const response = await axios.get(tarballUrl, { responseType: "arraybuffer" });
+    const zip = new AdmZip(response.data);
+    const procfileEntry = zip.getEntries().find(e => /Procfile$/i.test(e.entryName));
+    if (!procfileEntry) return ["web"]; // default to web if no Procfile
+
+    const content = procfileEntry.getData().toString("utf-8");
+    const roles = [];
+    content.split(/\r?\n/).forEach(line => {
+      const match = line.match(/^([a-zA-Z0-9_-]+):/);
+      if (match) roles.push(match[1]);
+    });
+
+    return roles.length ? roles : ["web"];
+  } catch (err) {
+    console.error("Error reading Procfile:", err.message);
+    return ["web"];
   }
-  return url;
 }
 
 // -------------------- DEPLOY BOT WITH LIVE LOGS --------------------
 app.get("/deploy/:appName/logs", async (req, res) => {
   const { appName } = req.params;
-  let { repo, sessionId } = req.query;
+  const { repo, sessionId } = req.query;
   const sanitizedAppName = sanitizeAppName(appName);
-
-  repo = fixTarballURL(repo);
 
   res.set({
     "Content-Type": "text/event-stream",
@@ -87,8 +95,11 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     );
     res.write(`data: ✅ SESSION_ID configured.\n\n`);
 
-    // Step 3: Start build using fixed tarball URL
-    res.write(`data: 📦 Using tarball: ${repo}\n\n`);
+    // Step 3: Detect roles from Procfile
+    const roles = await detectProcfileRoles(repo);
+    res.write(`data: 🔍 Detected roles in Procfile: ${roles.join(", ")}\n\n`);
+
+    // Step 4: Start build from tarball
     const buildRes = await axios.post(
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
       { source_blob: { url: repo } },
@@ -96,8 +107,9 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     );
 
     const buildId = buildRes.data.id;
+    res.write(`data: 🧰 Build started...\n\n`);
 
-    // Step 4: Poll build status
+    // Step 5: Poll build status
     const poll = setInterval(async () => {
       try {
         const statusRes = await axios.get(
@@ -108,34 +120,35 @@ app.get("/deploy/:appName/logs", async (req, res) => {
         const status = statusRes.data.status;
         res.write(`data: Build status: ${status}\n\n`);
 
-        if (status === "succeeded" || status === "failed") {
+        if (status === "succeeded") {
           clearInterval(poll);
-          res.write(`data: ✅ Deployment ${status}!\n\n`);
+          res.write(`data: ✅ Build succeeded!\n\n`);
 
-          if (status === "succeeded") {
-            // Step 5: Auto-detect worker dyno from Procfile
-            try {
-              const procfileUrl = `${repo.replace(/\.tar\.gz$/,"")}/Procfile`;
-              const procfileRes = await axios.get(procfileUrl).catch(()=>null);
-              if (procfileRes?.data?.toLowerCase().includes("worker:")) {
-                await axios.patch(
-                  `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
-                  { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1 }] },
-                  { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
-                );
-                res.write(`data: ⚙️ Worker dyno activated, web dyno disabled.\n\n`);
-              }
-            } catch {}
+          // Step 6: Scale dynos based on Procfile roles
+          const updates = roles.map(r => ({ type: r, quantity: r === "web" ? 1 : 1, size: "basic" }));
+          await axios.patch(
+            `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
+            { updates },
+            { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+          );
+          res.write(`data: ⚙️ Dynos scaled: ${updates.map(u => `${u.type}=${u.quantity}`).join(", ")}\n\n`);
 
-            saveApp({
-              name: sanitizedAppName,
-              repo,
-              sessionId,
-              url: `https://${sanitizedAppName}.herokuapp.com`,
-              date: new Date().toISOString()
-            });
-          }
+          // Step 7: Save bot info
+          saveApp({
+            name: sanitizedAppName,
+            repo,
+            sessionId,
+            url: `https://${sanitizedAppName}.herokuapp.com`,
+            date: new Date().toISOString()
+          });
 
+          res.write(`data: 💾 Bot saved locally. Deployment complete!\n\n`);
+          res.end();
+        }
+
+        if (status === "failed") {
+          clearInterval(poll);
+          res.write(`data: ❌ Deployment failed.\n\n`);
           res.end();
         }
       } catch (err) {
@@ -153,7 +166,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   }
 });
 
-// -------------------- LIST BOTS (HEROKU API VERSION) --------------------
+// -------------------- LIST BOTS --------------------
 app.get("/bots", async (req, res) => {
   try {
     const response = await axios.get("https://api.heroku.com/apps", {
@@ -194,21 +207,6 @@ app.post("/restart/:appName", async (req, res) => {
   } catch (err) {
     console.error(err.response?.data || err.message);
     res.status(500).json({ success: false, message: "❌ Failed to restart dynos" });
-  }
-});
-
-app.post("/activate/:appName", async (req, res) => {
-  const { appName } = req.params;
-  try {
-    await axios.patch(
-      `https://api.heroku.com/apps/${appName}/formation`,
-      { updates: [{ type: "web", quantity: 1 }] },
-      { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
-    );
-    res.json({ success: true, message: `✅ Dynos activated for ${appName}` });
-  } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(500).json({ success: false, message: "❌ Failed to activate dynos" });
   }
 });
 
