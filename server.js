@@ -1,8 +1,7 @@
 const express = require("express");
 const axios = require("axios");
-const fs = require("fs");
-const path = require("path");
 const cors = require("cors");
+const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -56,7 +55,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 
   try {
     res.write(`data: ✅ Creating app ${sanitizedAppName}...\n\n`);
-    
+
     // Create Heroku app
     await axios.post(
       "https://api.heroku.com/apps",
@@ -80,22 +79,23 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 
     res.write(`data: ✅ SESSION_ID configured.\n\n`);
 
-    // Upload source
+    // Prepare Heroku source
     const source = await axios.post(
       "https://api.heroku.com/sources",
       {},
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
-    // Download tarball from GitHub
+    // Fetch tarball from GitHub
+    res.write(`data: ⏳ Fetching tarball from GitHub...\n\n`);
     const tarballData = await axios.get(repo, { responseType: "arraybuffer" });
 
     // Upload tarball to Heroku
+    res.write(`data: ⏳ Uploading tarball to Heroku...\n\n`);
     await axios.put(source.data.source_blob.put_url, tarballData.data, {
       headers: { "Content-Type": "application/octet-stream" },
     });
-
-    res.write(`data: 📦 Repo tarball uploaded.\n\n`);
+    res.write(`data: 📦 Tarball uploaded.\n\n`);
 
     // Start build
     const build = await axios.post(
@@ -107,6 +107,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     const buildId = build.data.id;
     res.write(`data: 🔨 Build started...\n\n`);
 
+    // Poll build status
     const poll = setInterval(async () => {
       try {
         const statusRes = await axios.get(`https://api.heroku.com/apps/${sanitizedAppName}/builds/${buildId}`, {
@@ -116,38 +117,38 @@ app.get("/deploy/:appName/logs", async (req, res) => {
         const status = statusRes.data.status;
         res.write(`data: Build status: ${status}\n\n`);
 
-        if (status === "succeeded") {
+        if (status === "succeeded" || status === "failed") {
           clearInterval(poll);
-          // Disable web dyno, enable worker dyno
-          await axios.patch(
-            `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
-            { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1 }] },
-            { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
-          );
 
-          res.write(`data: ✅ Deployment succeeded!\n\n`);
-          res.end();
-        } else if (status === "failed") {
-          clearInterval(poll);
-          // Show detailed error if available
-          const outputRes = await axios.get(`https://api.heroku.com/apps/${sanitizedAppName}/builds/${buildId}`, {
-            headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" },
-          });
-          const errorMessage = outputRes.data.output_stream_url || "Unknown error during build.";
-          res.write(`data: ❌ Deployment failed!\n`);
-          res.write(`data: ⚠️ Heroku error: ${errorMessage}\n\n`);
+          if (status === "succeeded") {
+            // Disable web dyno, enable worker dyno
+            await axios.patch(
+              `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
+              { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1 }] },
+              { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+            );
+
+            res.write(`data: ✅ Deployment succeeded!\n\n`);
+          } else {
+            res.write(`data: ❌ Deployment failed!\n\n`);
+            // Include Heroku error messages if available
+            if (statusRes.data.output_stream_url) {
+              res.write(`data: ⚠️ Check build logs: ${statusRes.data.output_stream_url}\n\n`);
+            }
+          }
+
           res.end();
         }
       } catch (err) {
         console.error(err.response?.data || err.message);
-        res.write(`data: ⚠️ Error fetching build status: ${err.response?.data?.message || err.message}\n\n`);
+        res.write(`data: ⚠️ Error fetching build status: ${JSON.stringify(err.response?.data || err.message)}\n\n`);
         clearInterval(poll);
         res.end();
       }
     }, 4000);
   } catch (err) {
     console.error(err.response?.data || err.message);
-    res.write(`data: ❌ Deployment failed: ${err.response?.data?.message || err.message}\n\n`);
+    res.write(`data: ❌ Deployment failed: ${JSON.stringify(err.response?.data || err.message)}\n\n`);
     res.end();
   }
 });
