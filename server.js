@@ -56,12 +56,12 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 
   try {
     // Step 1: Create Heroku app
-    const createRes = await axios.post(
+    const createAppRes = await axios.post(
       "https://api.heroku.com/apps",
       { name: sanitizedAppName },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
-    res.write(`data: ✅ App created: ${createRes.data.name}\n\n`);
+    res.write(`data: ✅ App created: ${sanitizedAppName}\n\n`);
 
     // Step 2: Set SESSION_ID
     await axios.patch(
@@ -71,13 +71,12 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     );
     res.write(`data: ✅ SESSION_ID configured.\n\n`);
 
-    // Step 3: Get source_blob URLs
+    // Step 3: Get Heroku source URLs
     const sourceRes = await axios.post(
       "https://api.heroku.com/sources",
       {},
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
-
     const { put_url, get_url } = sourceRes.data.source_blob;
     res.write(`data: 📦 Source blob ready.\n\n`);
 
@@ -88,15 +87,14 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     await axios.put(put_url, repoZip.data, { headers: { "Content-Type": "application/octet-stream" } });
     res.write(`data: 🗂️ Repo uploaded to Heroku source.\n\n`);
 
-    // Step 6: Trigger build
+    // Step 6: Trigger Heroku build
     const buildRes = await axios.post(
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
-      { source_blob: { url: get_url, version: "main" } },
+      { source_blob: { url: get_url } },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
     const buildId = buildRes.data.id;
-    res.write(`data: 🏗️ Build triggered for app: ${sanitizedAppName}\n\n`);
 
     // Step 7: Poll build status
     const poll = setInterval(async () => {
@@ -111,18 +109,19 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 
         if (status === "succeeded" || status === "failed") {
           clearInterval(poll);
-          res.write(`data: ✅ Deployment ${status} for app: ${sanitizedAppName}!\n\n`);
+          res.write(`data: ✅ Deployment ${status}!\n\n`);
 
           if (status === "succeeded") {
-            // Activate only worker dyno
+            // Step 8: Activate worker dyno, disable web dyno
             await axios.patch(
               `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
-              { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1, size: "basic" }] },
+              { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1, size: "standard-1X" }] },
               { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
             );
+
             res.write(`data: ⚙️ Worker dyno activated, web dyno disabled.\n\n`);
 
-            // Save to data.json
+            // Step 9: Save bot locally
             saveApp({
               name: sanitizedAppName,
               repo,
@@ -130,6 +129,8 @@ app.get("/deploy/:appName/logs", async (req, res) => {
               url: `https://${sanitizedAppName}.herokuapp.com`,
               date: new Date().toISOString()
             });
+
+            res.write(`data: 🚀 App "${sanitizedAppName}" deployed successfully!\n\n`);
           }
 
           res.end();
@@ -157,11 +158,7 @@ app.get("/bots", async (req, res) => {
     });
 
     const bots = response.data
-      .filter(app =>
-        app.name.startsWith("trashcore-") ||
-        app.name.startsWith("bot-") ||
-        app.name.startsWith("drexter-")
-      )
+      .filter(app => app.name.startsWith("trashcore-") || app.name.startsWith("bot-") || app.name.startsWith("drexter-"))
       .map(app => ({
         name: app.name,
         url: `https://${app.name}.herokuapp.com`,
@@ -193,8 +190,7 @@ app.post("/restart/:appName", async (req, res) => {
 app.post("/activate/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
-    await axios.patch(
-      `https://api.heroku.com/apps/${appName}/formation`,
+    await axios.patch(`https://api.heroku.com/apps/${appName}/formation`,
       { updates: [{ type: "web", quantity: 1 }] },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
@@ -218,10 +214,7 @@ app.post("/update-session/:appName", async (req, res) => {
 
     const data = readData();
     const idx = data.findIndex(b => b.name === appName);
-    if (idx !== -1) {
-      data[idx].sessionId = sessionId;
-      writeData(data);
-    }
+    if (idx !== -1) { data[idx].sessionId = sessionId; writeData(data); }
 
     res.json({ success: true, message: `✅ Session ID updated for ${appName}` });
   } catch (err) {
