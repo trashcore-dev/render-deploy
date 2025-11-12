@@ -13,7 +13,6 @@ app.use(express.json());
 const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
 
 // -------------------- SQLITE SETUP --------------------
-// Use a writable directory on Render instead of /var/data
 const DATA_DIR = path.join(process.cwd(), "data");
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -22,7 +21,6 @@ const DB_PATH = path.join(DATA_DIR, "bots.db");
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 
-// Create table if not exists
 db.prepare(`
   CREATE TABLE IF NOT EXISTS bots (
     name TEXT PRIMARY KEY,
@@ -65,7 +63,7 @@ async function detectProcfileRoles(tarballUrl) {
     const response = await axios.get(tarballUrl, { responseType: "arraybuffer" });
     const zip = new AdmZip(response.data);
     const procfileEntry = zip.getEntries().find(e => /Procfile$/i.test(e.entryName));
-    if (!procfileEntry) return ["worker"]; // default to worker if no Procfile
+    if (!procfileEntry) return ["worker"];
 
     const content = procfileEntry.getData().toString("utf-8");
     const roles = [];
@@ -95,7 +93,6 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   res.flushHeaders();
 
   try {
-    // Step 1: Create Heroku app
     await axios.post(
       "https://api.heroku.com/apps",
       { name: sanitizedAppName },
@@ -103,7 +100,6 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     );
     res.write(`data: ✅ App created: ${sanitizedAppName}\n\n`);
 
-    // Step 2: Set SESSION_ID
     await axios.patch(
       `https://api.heroku.com/apps/${sanitizedAppName}/config-vars`,
       { SESSION_ID: sessionId },
@@ -111,11 +107,9 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     );
     res.write(`data: ✅ SESSION_ID configured.\n\n`);
 
-    // Step 3: Detect roles from Procfile
     const roles = await detectProcfileRoles(repo);
     res.write(`data: 🔍 Detected roles in Procfile: ${roles.join(", ")}\n\n`);
 
-    // Step 4: Start build from tarball
     const buildRes = await axios.post(
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
       { source_blob: { url: repo } },
@@ -125,7 +119,6 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     const buildId = buildRes.data.id;
     res.write(`data: 🧰 Build started...\n\n`);
 
-    // Step 5: Poll build status
     const poll = setInterval(async () => {
       try {
         const statusRes = await axios.get(
@@ -140,7 +133,6 @@ app.get("/deploy/:appName/logs", async (req, res) => {
           clearInterval(poll);
           res.write(`data: ✅ Build succeeded!\n\n`);
 
-          // Step 6: Scale dynos to worker only
           await axios.patch(
             `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
             { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1, size: "basic" }] },
@@ -148,7 +140,6 @@ app.get("/deploy/:appName/logs", async (req, res) => {
           );
           res.write(`data: ⚙️ Dynos scaled: web=0, worker=1\n\n`);
 
-          // Step 7: Save bot info
           saveApp({
             name: sanitizedAppName,
             repo,
@@ -181,14 +172,39 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   }
 });
 
-// -------------------- LIST BOTS --------------------
+// -------------------- FIXED: LIST BOTS --------------------
 app.get("/bots", async (req, res) => {
   try {
     const bots = db.prepare(`SELECT * FROM bots ORDER BY date DESC`).all();
-    res.json({ success: true, count: bots.length, bots });
+    if (!bots || bots.length === 0) {
+      return res.json({ success: true, count: 0, bots: [] });
+    }
+
+    const updatedBots = await Promise.all(
+      bots.map(async (bot) => {
+        try {
+          const herokuRes = await axios.get(
+            `https://api.heroku.com/apps/${bot.name}`,
+            {
+              headers: {
+                Authorization: `Bearer ${HEROKU_API_KEY}`,
+                Accept: "application/vnd.heroku+json; version=3",
+              },
+            }
+          );
+          bot.status = "active";
+          bot.url = `https://${bot.name}.herokuapp.com`;
+        } catch {
+          bot.status = "deleted";
+        }
+        return bot;
+      })
+    );
+
+    res.json({ success: true, count: updatedBots.length, bots: updatedBots });
   } catch (err) {
     console.error("Error reading from SQLite:", err.message);
-    res.status(500).json({ success: false, message: "❌ Failed to read bots" });
+    res.status(500).json({ success: false, message: "❌ Failed to load bots" });
   }
 });
 
