@@ -2,7 +2,7 @@ const express = require("express");
 const axios = require("axios");
 const fs = require("fs");
 const cors = require("cors");
-const AdmZip = require("adm-zip");
+const AdmZip = require("adm-zip"); // For reading Procfile from tarball
 const path = require("path");
 const Database = require("better-sqlite3");
 
@@ -172,29 +172,29 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   }
 });
 
-// -------------------- LIST BOTS (via HEROKU API) --------------------
+// -------------------- LIST BOTS FROM HEROKU --------------------
 app.get("/bots", async (req, res) => {
   try {
-    const response = await axios.get("https://api.heroku.com/apps", {
+    const herokuRes = await axios.get("https://api.heroku.com/apps", {
       headers: {
         Authorization: `Bearer ${HEROKU_API_KEY}`,
-        Accept: "application/vnd.heroku+json; version=3"
-      }
+        Accept: "application/vnd.heroku+json; version=3",
+      },
     });
 
-    const bots = response.data.map(app => ({
+    const apps = herokuRes.data.map(app => ({
       name: app.name,
       url: `https://${app.name}.herokuapp.com`,
+      region: app.region.name,
+      stack: app.stack.name,
       created_at: app.created_at,
-      region: app.region?.name || "unknown",
-      stack: app.stack?.name || "heroku-24",
-      status: "active"
+      status: "active",
     }));
 
-    res.json({ success: true, count: bots.length, bots });
+    res.json({ success: true, count: apps.length, bots: apps });
   } catch (err) {
-    console.error("❌ Failed to fetch Heroku bots:", err.response?.data || err.message);
-    res.status(500).json({ success: false, message: "❌ Failed to load bots" });
+    console.error("❌ Failed to fetch bots from Heroku:", err.message);
+    res.status(500).json({ success: false, message: "Failed to load bots" });
   }
 });
 
