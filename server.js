@@ -13,8 +13,11 @@ app.use(express.json());
 const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
 
 // -------------------- SQLITE SETUP --------------------
-const DB_PATH = "/var/data/bots.db";
-if (!fs.existsSync("/var/data")) fs.mkdirSync("/var/data", { recursive: true });
+// Use a writable directory on Render instead of /var/data
+const DATA_DIR = path.join(process.cwd(), "data");
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+const DB_PATH = path.join(DATA_DIR, "bots.db");
 
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
