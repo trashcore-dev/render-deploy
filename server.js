@@ -2,7 +2,7 @@ const express = require("express");
 const axios = require("axios");
 const fs = require("fs");
 const cors = require("cors");
-const AdmZip = require("adm-zip"); // For reading Procfile from tarball
+const AdmZip = require("adm-zip");
 const path = require("path");
 const Database = require("better-sqlite3");
 
@@ -172,38 +172,28 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   }
 });
 
-// -------------------- FIXED: LIST BOTS --------------------
+// -------------------- LIST BOTS (via HEROKU API) --------------------
 app.get("/bots", async (req, res) => {
   try {
-    const bots = db.prepare(`SELECT * FROM bots ORDER BY date DESC`).all();
-    if (!bots || bots.length === 0) {
-      return res.json({ success: true, count: 0, bots: [] });
-    }
+    const response = await axios.get("https://api.heroku.com/apps", {
+      headers: {
+        Authorization: `Bearer ${HEROKU_API_KEY}`,
+        Accept: "application/vnd.heroku+json; version=3"
+      }
+    });
 
-    const updatedBots = await Promise.all(
-      bots.map(async (bot) => {
-        try {
-          const herokuRes = await axios.get(
-            `https://api.heroku.com/apps/${bot.name}`,
-            {
-              headers: {
-                Authorization: `Bearer ${HEROKU_API_KEY}`,
-                Accept: "application/vnd.heroku+json; version=3",
-              },
-            }
-          );
-          bot.status = "active";
-          bot.url = `https://${bot.name}.herokuapp.com`;
-        } catch {
-          bot.status = "deleted";
-        }
-        return bot;
-      })
-    );
+    const bots = response.data.map(app => ({
+      name: app.name,
+      url: `https://${app.name}.herokuapp.com`,
+      created_at: app.created_at,
+      region: app.region?.name || "unknown",
+      stack: app.stack?.name || "heroku-24",
+      status: "active"
+    }));
 
-    res.json({ success: true, count: updatedBots.length, bots: updatedBots });
+    res.json({ success: true, count: bots.length, bots });
   } catch (err) {
-    console.error("Error reading from SQLite:", err.message);
+    console.error("❌ Failed to fetch Heroku bots:", err.response?.data || err.message);
     res.status(500).json({ success: false, message: "❌ Failed to load bots" });
   }
 });
