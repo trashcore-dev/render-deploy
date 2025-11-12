@@ -1,52 +1,14 @@
 const express = require("express");
 const axios = require("axios");
-const fs = require("fs");
 const cors = require("cors");
 const AdmZip = require("adm-zip"); // For reading Procfile from tarball
 const path = require("path");
-const Database = require("better-sqlite3");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
-
-// -------------------- SQLITE SETUP --------------------
-const DATA_DIR = path.join(process.cwd(), "data");
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-const DB_PATH = path.join(DATA_DIR, "bots.db");
-
-const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-
-db.prepare(`
-  CREATE TABLE IF NOT EXISTS bots (
-    name TEXT PRIMARY KEY,
-    repo TEXT,
-    sessionId TEXT,
-    url TEXT,
-    date TEXT
-  )
-`).run();
-
-// -------------------- SQLITE HELPERS --------------------
-function saveApp(appInfo) {
-  db.prepare(`
-    INSERT INTO bots (name, repo, sessionId, url, date)
-    VALUES (@name, @repo, @sessionId, @url, @date)
-    ON CONFLICT(name) DO UPDATE SET
-      repo=excluded.repo,
-      sessionId=excluded.sessionId,
-      url=excluded.url,
-      date=excluded.date
-  `).run(appInfo);
-}
-
-function deleteLocalApp(name) {
-  db.prepare(`DELETE FROM bots WHERE name = ?`).run(name);
-}
 
 // -------------------- SANITIZE APP NAME --------------------
 function sanitizeAppName(name) {
@@ -140,15 +102,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
           );
           res.write(`data: ⚙️ Dynos scaled: web=0, worker=1\n\n`);
 
-          saveApp({
-            name: sanitizedAppName,
-            repo,
-            sessionId,
-            url: `https://${sanitizedAppName}.herokuapp.com`,
-            date: new Date().toISOString()
-          });
-
-          res.write(`data: 💾 Bot saved locally. Deployment complete!\n\n`);
+          res.write(`data: 💾 Deployment complete! Bot URL: https://${sanitizedAppName}.herokuapp.com\n\n`);
           res.end();
         }
 
@@ -169,44 +123,6 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     console.error(err.response?.data || err.message);
     res.write(`data: ❌ Deployment failed.\n\n`);
     res.end();
-  }
-});
-
-// -------------------- LIST BOTS FROM HEROKU (FIXED FOR LARGE NUMBERS) --------------------
-app.get("/bots", async (req, res) => {
-  try {
-    let allApps = [];
-    let page = 1;
-    const pageSize = 50; // Heroku max per page
-
-    while (true) {
-      const herokuRes = await axios.get("https://api.heroku.com/apps", {
-        headers: {
-          Authorization: `Bearer ${HEROKU_API_KEY}`,
-          Accept: "application/vnd.heroku+json; version=3",
-        },
-        params: { per_page: pageSize, page }
-      });
-
-      const apps = herokuRes.data.map(app => ({
-        name: app.name,
-        url: `https://${app.name}.herokuapp.com`,
-        region: app.region.name,
-        stack: app.stack.name,
-        created_at: app.created_at,
-        status: "active",
-      }));
-
-      allApps = allApps.concat(apps);
-
-      if (apps.length < pageSize) break; // No more pages
-      page++;
-    }
-
-    res.json({ success: true, count: allApps.length, bots: allApps });
-  } catch (err) {
-    console.error("❌ Failed to fetch bots from Heroku:", err.response?.data || err.message);
-    res.status(500).json({ success: false, message: "Failed to load bots" });
   }
 });
 
@@ -235,9 +151,6 @@ app.post("/update-session/:appName", async (req, res) => {
       { SESSION_ID: sessionId },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
-
-    db.prepare(`UPDATE bots SET sessionId = ? WHERE name = ?`).run(sessionId, appName);
-
     res.json({ success: true, message: `✅ Session ID updated for ${appName}` });
   } catch (err) {
     console.error(err.response?.data || err.message);
@@ -251,7 +164,6 @@ app.delete("/delete/:appName", async (req, res) => {
     await axios.delete(`https://api.heroku.com/apps/${appName}`, {
       headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" }
     });
-    deleteLocalApp(appName);
     res.json({ success: true, message: `🗑 App "${appName}" deleted successfully.` });
   } catch (err) {
     console.error(err.response?.data || err.message);
