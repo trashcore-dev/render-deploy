@@ -172,28 +172,41 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   }
 });
 
-// -------------------- LIST BOTS FROM HEROKU --------------------
+// -------------------- LIST BOTS FROM HEROKU (FIXED PAGINATION) --------------------
 app.get("/bots", async (req, res) => {
   try {
-    const herokuRes = await axios.get("https://api.heroku.com/apps", {
-      headers: {
-        Authorization: `Bearer ${HEROKU_API_KEY}`,
-        Accept: "application/vnd.heroku+json; version=3",
-      },
-    });
+    let allApps = [];
+    let rangeStart = 0;
+    const pageSize = 50; // Heroku returns max 50 apps per request
 
-    const apps = herokuRes.data.map(app => ({
-      name: app.name,
-      url: `https://${app.name}.herokuapp.com`,
-      region: app.region.name,
-      stack: app.stack.name,
-      created_at: app.created_at,
-      status: "active",
-    }));
+    while (true) {
+      const herokuRes = await axios.get("https://api.heroku.com/apps", {
+        headers: {
+          Authorization: `Bearer ${HEROKU_API_KEY}`,
+          Accept: "application/vnd.heroku+json; version=3",
+          Range: `ids=${rangeStart}-${rangeStart + pageSize - 1}`
+        }
+      });
 
-    res.json({ success: true, count: apps.length, bots: apps });
+      const apps = herokuRes.data.map(app => ({
+        name: app.name,
+        url: `https://${app.name}.herokuapp.com`,
+        region: app.region.name,
+        stack: app.stack.name,
+        created_at: app.created_at,
+        status: "active",
+      }));
+
+      allApps = allApps.concat(apps);
+
+      if (apps.length < pageSize) break; // last page reached
+
+      rangeStart += pageSize;
+    }
+
+    res.json({ success: true, count: allApps.length, bots: allApps });
   } catch (err) {
-    console.error("❌ Failed to fetch bots from Heroku:", err.message);
+    console.error("❌ Failed to fetch bots from Heroku:", err.response?.data || err.message);
     res.status(500).json({ success: false, message: "Failed to load bots" });
   }
 });
