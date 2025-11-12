@@ -172,20 +172,20 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   }
 });
 
-// -------------------- LIST BOTS FROM HEROKU (FIXED PAGINATION) --------------------
+// -------------------- LIST BOTS FROM HEROKU (FIXED FOR LARGE NUMBERS) --------------------
 app.get("/bots", async (req, res) => {
   try {
     let allApps = [];
-    let rangeStart = 0;
-    const pageSize = 50; // Heroku returns max 50 apps per request
+    let page = 1;
+    const pageSize = 50; // Heroku max per page
 
     while (true) {
       const herokuRes = await axios.get("https://api.heroku.com/apps", {
         headers: {
           Authorization: `Bearer ${HEROKU_API_KEY}`,
           Accept: "application/vnd.heroku+json; version=3",
-          Range: `ids=${rangeStart}-${rangeStart + pageSize - 1}`
-        }
+        },
+        params: { per_page: pageSize, page }
       });
 
       const apps = herokuRes.data.map(app => ({
@@ -199,9 +199,8 @@ app.get("/bots", async (req, res) => {
 
       allApps = allApps.concat(apps);
 
-      if (apps.length < pageSize) break; // last page reached
-
-      rangeStart += pageSize;
+      if (apps.length < pageSize) break; // No more pages
+      page++;
     }
 
     res.json({ success: true, count: allApps.length, bots: allApps });
