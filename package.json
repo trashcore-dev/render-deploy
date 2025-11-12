@@ -8,7 +8,7 @@
   "dependencies": {
     "axios": "latest",
     "adm-zip": "latest",
-    "better-sqlite3": "latest"
+    "better-sqlite3": "latest",
     "cors": "latest",
     "express": "latest",
     "os": "^0.1.1"
