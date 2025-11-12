@@ -4,43 +4,56 @@ const fs = require("fs");
 const cors = require("cors");
 const AdmZip = require("adm-zip"); // For reading Procfile from tarball
 const path = require("path");
+const Database = require("better-sqlite3");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
-const DATA_FILE = "./data.json";
 
-// Ensure data.json exists
-if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, JSON.stringify([]));
+// -------------------- SQLITE SETUP --------------------
+const DB_PATH = "/var/data/bots.db";
+if (!fs.existsSync("/var/data")) fs.mkdirSync("/var/data", { recursive: true });
 
-// -------------------- DATA.JSON HELPERS --------------------
-function readData() {
-  try { return JSON.parse(fs.readFileSync(DATA_FILE)); } 
-  catch { return []; }
-}
+const db = new Database(DB_PATH);
+db.pragma("journal_mode = WAL");
 
-function writeData(data) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-}
+// Create table if not exists
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS bots (
+    name TEXT PRIMARY KEY,
+    repo TEXT,
+    sessionId TEXT,
+    url TEXT,
+    date TEXT
+  )
+`).run();
 
+// -------------------- SQLITE HELPERS --------------------
 function saveApp(appInfo) {
-  const data = readData();
-  const idx = data.findIndex(a => a.name === appInfo.name);
-  if (idx !== -1) data[idx] = { ...data[idx], ...appInfo };
-  else data.push(appInfo);
-  writeData(data);
+  db.prepare(`
+    INSERT INTO bots (name, repo, sessionId, url, date)
+    VALUES (@name, @repo, @sessionId, @url, @date)
+    ON CONFLICT(name) DO UPDATE SET
+      repo=excluded.repo,
+      sessionId=excluded.sessionId,
+      url=excluded.url,
+      date=excluded.date
+  `).run(appInfo);
 }
 
 function deleteLocalApp(name) {
-  const data = readData();
-  writeData(data.filter(b => b.name !== name));
+  db.prepare(`DELETE FROM bots WHERE name = ?`).run(name);
 }
 
 // -------------------- SANITIZE APP NAME --------------------
 function sanitizeAppName(name) {
-  return name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "").replace(/--+/g, "-");
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/--+/g, "-");
 }
 
 // -------------------- DETECT PROCFILE --------------------
@@ -168,30 +181,11 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 // -------------------- LIST BOTS --------------------
 app.get("/bots", async (req, res) => {
   try {
-    const response = await axios.get("https://api.heroku.com/apps", {
-      headers: {
-        Authorization: `Bearer ${HEROKU_API_KEY}`,
-        Accept: "application/vnd.heroku+json; version=3"
-      }
-    });
-
-    const bots = response.data
-      .filter(app =>
-        app.name.startsWith("trashcore-") ||
-        app.name.startsWith("bot-") ||
-        app.name.startsWith("drexter-")
-      )
-      .map(app => ({
-        name: app.name,
-        url: `https://${app.name}.herokuapp.com`,
-        created_at: app.created_at,
-        updated_at: app.updated_at
-      }));
-
+    const bots = db.prepare(`SELECT * FROM bots ORDER BY date DESC`).all();
     res.json({ success: true, count: bots.length, bots });
   } catch (err) {
-    console.error("Error fetching Heroku apps:", err.response?.data || err.message);
-    res.status(500).json({ success: false, message: "❌ Failed to fetch bots" });
+    console.error("Error reading from SQLite:", err.message);
+    res.status(500).json({ success: false, message: "❌ Failed to read bots" });
   }
 });
 
@@ -215,17 +209,13 @@ app.post("/update-session/:appName", async (req, res) => {
   if (!sessionId) return res.status(400).json({ success: false, message: "Session ID required" });
 
   try {
-    await axios.patch(`https://api.heroku.com/apps/${appName}/config-vars`,
+    await axios.patch(
+      `https://api.heroku.com/apps/${appName}/config-vars`,
       { SESSION_ID: sessionId },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
-    const data = readData();
-    const idx = data.findIndex(b => b.name === appName);
-    if (idx !== -1) {
-      data[idx].sessionId = sessionId;
-      writeData(data);
-    }
+    db.prepare(`UPDATE bots SET sessionId = ? WHERE name = ?`).run(sessionId, appName);
 
     res.json({ success: true, message: `✅ Session ID updated for ${appName}` });
   } catch (err) {
@@ -248,11 +238,11 @@ app.delete("/delete/:appName", async (req, res) => {
   }
 });
 
-// Get Heroku logs URL (for front-end)
 app.get("/logs/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
-    const logRes = await axios.post(`https://api.heroku.com/apps/${appName}/log-sessions`,
+    const logRes = await axios.post(
+      `https://api.heroku.com/apps/${appName}/log-sessions`,
       { tail: true },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
