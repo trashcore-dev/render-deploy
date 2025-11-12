@@ -127,6 +127,8 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 });
 
 // -------------------- DYNOS & APP MANAGEMENT --------------------
+
+// Restart dynos for a given app
 app.post("/restart/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
@@ -140,6 +142,7 @@ app.post("/restart/:appName", async (req, res) => {
   }
 });
 
+// Update session ID for a given app
 app.post("/update-session/:appName", async (req, res) => {
   const { appName } = req.params;
   const { sessionId } = req.body;
@@ -158,6 +161,7 @@ app.post("/update-session/:appName", async (req, res) => {
   }
 });
 
+// Delete an app
 app.delete("/delete/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
@@ -171,6 +175,7 @@ app.delete("/delete/:appName", async (req, res) => {
   }
 });
 
+// Get Heroku log session URL
 app.get("/logs/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
