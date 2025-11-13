@@ -12,6 +12,7 @@ app.use(cors());
 app.use(express.json());
 
 const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
+const TARBALL_PATH = path.resolve(__dirname, "bot.tar.gz");
 
 // -------------------- SANITIZE APP NAME --------------------
 function sanitizeAppName(name) {
@@ -25,7 +26,6 @@ function sanitizeAppName(name) {
 // -------------------- PACKAGE GITHUB REPO --------------------
 function packageGitRepo(repoUrl = "https://github.com/Tennor-modz/trashcore-ultra.git") {
   const repoName = "trashcore-ultra";
-  const tarballPath = path.resolve(__dirname, "bot.tar.gz");
   const clonePath = path.resolve(__dirname, repoName);
 
   try {
@@ -34,9 +34,9 @@ function packageGitRepo(repoUrl = "https://github.com/Tennor-modz/trashcore-ultr
     }
 
     execSync(`git clone ${repoUrl}`, { stdio: "inherit" });
-    execSync(`tar -czf ${tarballPath} -C ${clonePath} .`);
-    console.log("✅ Tarball created:", tarballPath);
-    return tarballPath;
+    execSync(`tar -czf ${TARBALL_PATH} -C ${clonePath} .`);
+    console.log("✅ Tarball created:", TARBALL_PATH);
+    return TARBALL_PATH;
   } catch (err) {
     console.error("❌ Failed to package repo:", err.message);
     return null;
@@ -45,11 +45,10 @@ function packageGitRepo(repoUrl = "https://github.com/Tennor-modz/trashcore-ultr
 
 // -------------------- SERVE TARBALL --------------------
 app.get("/deploys/bot.tar.gz", (req, res) => {
-  const filePath = path.resolve(__dirname, "bot.tar.gz");
-  if (fs.existsSync(filePath)) {
+  if (fs.existsSync(TARBALL_PATH)) {
     res.setHeader("Content-Type", "application/gzip");
     res.setHeader("Content-Disposition", "attachment; filename=bot.tar.gz");
-    fs.createReadStream(filePath).pipe(res);
+    fs.createReadStream(TARBALL_PATH).pipe(res);
   } else {
     res.status(404).send("Tarball not found");
   }
@@ -94,7 +93,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   res.flushHeaders();
 
   const tarballPath = packageGitRepo();
-  if (!tarballPath) {
+  if (!tarballPath || !fs.existsSync(tarballPath)) {
     res.write(`data: ❌ Tarball packaging failed\n\n`);
     return res.end();
   }
