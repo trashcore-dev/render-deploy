@@ -96,11 +96,12 @@ res.flushHeaders();
           res.write(`data: ✅ Build succeeded!\n\n`);
 
           await axios.patch(
-            `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
-            { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1, size: "basic" }] },
-            { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
-          );
-          res.write(`data: ⚙️ Dynos scaled: web=0, worker=1\n\n`);
+  `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
+  { updates: [{ type: "web", quantity: 1, size: "basic" }] },
+  { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+);
+
+         res.write(`data: ⚙️ Dynos scaled: web=1\n\n`);
           res.write(`data: 💾 Deployment complete! Bot URL: https://${sanitizedAppName}.herokuapp.com\n\n`);
           res.end();
         }
