@@ -19,18 +19,17 @@ function sanitizeAppName(name) {
     .replace(/--+/g, "-");
 }
 
-// -------------------- DETECT PROCFILE --------------------
+// -------------------- DETECT PROCFILE CONTENT --------------------
 async function detectProcfileContent(tarballUrl) {
   try {
     const response = await axios.get(tarballUrl, { responseType: "stream" });
     const extract = tar.extract();
+    let content = "";
 
     return await new Promise((resolve) => {
-      let procfileContent = "";
-
       extract.on("entry", (header, stream, next) => {
         if (header.name === "Procfile") {
-          stream.on("data", chunk => procfileContent += chunk.toString());
+          stream.on("data", chunk => content += chunk.toString());
           stream.on("end", next);
         } else {
           stream.resume();
@@ -38,17 +37,10 @@ async function detectProcfileContent(tarballUrl) {
         }
       });
 
-      extract.on("finish", () => {
-        resolve(procfileContent.trim());
-      });
-
-      response.data.pipe(gunzip()).pipe(extract).on("error", err => {
-        console.error("Tarball extraction error:", err.message);
-        resolve("");
-      });
+      extract.on("finish", () => resolve(content.trim()));
+      response.data.pipe(gunzip()).pipe(extract).on("error", () => resolve(""));
     });
-  } catch (err) {
-    console.error("Error reading tarball:", err.message);
+  } catch {
     return "";
   }
 }
@@ -74,15 +66,22 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     );
     res.write(`data: ✅ App created: ${sanitizedAppName}\n\n`);
 
+    await axios.put(
+      `https://api.heroku.com/apps/${sanitizedAppName}/buildpack-installations`,
+      { updates: [{ buildpack: "heroku/nodejs" }] },
+      { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+    );
+    res.write(`data: 🔧 Node.js buildpack enforced\n\n`);
+
     await axios.patch(
       `https://api.heroku.com/apps/${sanitizedAppName}/config-vars`,
       { SESSION_ID: sessionId },
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
-    res.write(`data: ✅ SESSION_ID configured.\n\n`);
+    res.write(`data: ✅ SESSION_ID configured\n\n`);
 
     const procfile = await detectProcfileContent(repo);
-    res.write(`data: 🔍 Procfile content:\n${procfile}\n\n`);
+    res.write(`data: 🔍 Procfile content:\n${procfile || "❌ Not found"}\n\n`);
 
     const buildRes = await axios.post(
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
@@ -105,7 +104,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 
         if (status === "succeeded") {
           clearInterval(poll);
-          res.write(`data: ✅ Build succeeded!\n\n`);
+          res.write(`data: ✅ Build succeeded\n\n`);
 
           await axios.patch(
             `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
@@ -114,26 +113,24 @@ app.get("/deploy/:appName/logs", async (req, res) => {
           );
 
           res.write(`data: ⚙️ Dynos scaled: web=1\n\n`);
-          res.write(`data: 💾 Deployment complete! Bot URL: https://${sanitizedAppName}.herokuapp.com\n\n`);
+          res.write(`data: 🚀 Bot live at https://${sanitizedAppName}.herokuapp.com\n\n`);
           res.end();
         }
 
         if (status === "failed") {
           clearInterval(poll);
-          res.write(`data: ❌ Deployment failed.\n\n`);
+          res.write(`data: ❌ Build failed\n\n`);
           res.end();
         }
-      } catch (err) {
-        console.error(err.response?.data || err.message);
-        res.write(`data: ⚠️ Error fetching build logs.\n\n`);
+      } catch {
         clearInterval(poll);
+        res.write(`data: ⚠️ Error checking build status\n\n`);
         res.end();
       }
     }, 3000);
 
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.write(`data: ❌ Deployment failed.\n\n`);
+    res.write(`data: ❌ Deployment error: ${err.message}\n\n`);
     res.end();
   }
 });
@@ -142,18 +139,12 @@ app.get("/deploy/:appName/logs", async (req, res) => {
 
 app.post("/restart/:appName", async (req, res) => {
   const { appName } = req.params;
-  const sanitizedAppName = sanitizeAppName(appName);
-
   try {
-    await axios.delete(`https://api.heroku.com/apps/${sanitizedAppName}/dynos`, {
-      headers: {
-        Authorization: `Bearer ${HEROKU_API_KEY}`,
-        Accept: "application/vnd.heroku+json; version=3"
-      }
+    await axios.delete(`https://api.heroku.com/apps/${appName}/dynos`, {
+      headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" }
     });
-    res.json({ success: true, message: `✅ Dynos restarted for ${sanitizedAppName}` });
-  } catch (err) {
-    console.error(err.response?.data || err.message);
+    res.json({ success: true, message: `✅ Dynos restarted for ${appName}` });
+  } catch {
     res.status(500).json({ success: false, message: "❌ Failed to restart dynos" });
   }
 });
@@ -170,8 +161,7 @@ app.post("/update-session/:appName", async (req, res) => {
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
     res.json({ success: true, message: `✅ Session ID updated for ${appName}` });
-  } catch (err) {
-    console.error(err.response?.data || err.message);
+  } catch {
     res.status(500).json({ success: false, message: "❌ Failed to update session ID" });
   }
 });
@@ -183,8 +173,7 @@ app.delete("/delete/:appName", async (req, res) => {
       headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" }
     });
     res.json({ success: true, message: `🗑 App "${appName}" deleted successfully.` });
-  } catch (err) {
-    console.error(err.response?.data || err.message);
+  } catch {
     res.status(500).json({ success: false, message: "❌ Failed to delete app" });
   }
 });
@@ -198,8 +187,7 @@ app.get("/logs/:appName", async (req, res) => {
       { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
     res.json({ url: logRes.data.logplex_url });
-  } catch (err) {
-    console.error(err.response?.data || err.message);
+  } catch {
     res.status(500).json({ message: "❌ Failed to get logs" });
   }
 });
