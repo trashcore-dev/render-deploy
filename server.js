@@ -27,11 +27,8 @@ async function detectProcfileRoles(tarballUrl) {
     const roles = [];
 
     return await new Promise((resolve) => {
-      let found = false;
-
       extract.on("entry", (header, stream, next) => {
         if (/Procfile$/i.test(header.name)) {
-          found = true;
           let content = "";
           stream.on("data", chunk => content += chunk.toString());
           stream.on("end", () => {
