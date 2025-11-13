@@ -8,7 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const HEROKUAPIKEY = process.env.HEROKU_API_KEY;
+const HEROKUAPIKEY = process.env.HEROKUAPIKEY;
 
 // -------------------- SANITIZE APP NAME --------------------
 function sanitizeAppName(name) {
@@ -48,15 +48,15 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   const sanitizedAppName = sanitizeAppName(appName);
 
   res.set({
-  "Content-Type": "text/event-stream",
-  "Cache-Control": "no-cache",
-  Connection: "keep-alive"
-});
-res.flushHeaders();
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive"
+  });
+  res.flushHeaders();
 
-// 🔧 Keep connection alive to prevent Render timeout
-req.socket.setKeepAlive(true);
-req.socket.setTimeout(0);
+  // ✅ Prevent Render timeout
+  req.socket.setKeepAlive(true);
+  req.socket.setTimeout(0);
 
   try {
     await axios.post(
@@ -64,17 +64,17 @@ req.socket.setTimeout(0);
       { name: sanitizedAppName },
       { headers: { Authorization: `Bearer ${HEROKUAPIKEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
-    res.write(`✅ App created: ${sanitizedAppName}\n\n`);
+    res.write(`data: ✅ App created: ${sanitizedAppName}\n\n`);
 
     await axios.patch(
       `https://api.heroku.com/apps/${sanitizedAppName}/config-vars`,
       { SESSION_ID: sessionId },
       { headers: { Authorization: `Bearer ${HEROKUAPIKEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
-    res.write(`✅ SESSION_ID configured.\n\n`);
+    res.write(`data: ✅ SESSION_ID configured.\n\n`);
 
     const roles = await detectProcfileRoles(repo);
-    res.write(`🔍 Detected roles in Procfile: ${roles.join(", ")}\n\n`);
+    res.write(`data: 🔍 Detected roles in Procfile: ${roles.join(", ")}\n\n`);
 
     const buildRes = await axios.post(
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
@@ -83,7 +83,7 @@ req.socket.setTimeout(0);
     );
 
     const buildId = buildRes.data.id;
-    res.write(`🧰 Build started...\n\n`);
+    res.write(`data: 🧰 Build started...\n\n`);
 
     const poll = setInterval(async () => {
       try {
@@ -93,31 +93,30 @@ req.socket.setTimeout(0);
         );
 
         const status = statusRes.data.status;
-        res.write(`Build status: ${status}\n\n`);
+        res.write(`data: Build status: ${status}\n\n`);
 
         if (status === "succeeded") {
           clearInterval(poll);
-          res.write(`✅ Build succeeded!\n\n`);
+          res.write(`data: ✅ Build succeeded!\n\n`);
 
           await axios.patch(
             `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
             { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1, size: "basic" }] },
             { headers: { Authorization: `Bearer ${HEROKUAPIKEY}`, Accept: "application/vnd.heroku+json; version=3" } }
           );
-          res.write(`⚙️ Dynos scaled: web=0, worker=1\n\n`);
-
-          res.write(`💾 Deployment complete! Bot URL: https://${sanitizedAppName}.herokuapp.com\n\n`);
+          res.write(`data: ⚙️ Dynos scaled: web=0, worker=1\n\n`);
+          res.write(`data: 💾 Deployment complete! Bot URL: https://${sanitizedAppName}.herokuapp.com\n\n`);
           res.end();
         }
 
         if (status === "failed") {
           clearInterval(poll);
-          res.write(`❌ Deployment failed.\n\n`);
+          res.write(`data: ❌ Deployment failed.\n\n`);
           res.end();
         }
       } catch (err) {
         console.error(err.response?.data || err.message);
-        res.write(`⚠️ Error fetching build logs.\n\n`);
+        res.write(`data: ⚠️ Error fetching build logs.\n\n`);
         clearInterval(poll);
         res.end();
       }
@@ -125,7 +124,7 @@ req.socket.setTimeout(0);
 
   } catch (err) {
     console.error(err.response?.data || err.message);
-    res.write(`❌ Deployment failed.\n\n`);
+    res.write(`data: ❌ Deployment failed.\n\n`);
     res.end();
   }
 });
@@ -136,7 +135,7 @@ req.socket.setTimeout(0);
 app.post("/restart/:appName", async (req, res) => {
   const { appName } = req.params;
   const sanitizedAppName = sanitizeAppName(appName);
-
+  
   try {
     await axios.delete(`https://api.heroku.com/apps/${sanitizedAppName}/dynos`, {
       headers: { 
