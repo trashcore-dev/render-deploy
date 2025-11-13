@@ -22,17 +22,23 @@ function sanitizeAppName(name) {
     .replace(/--+/g, "-");
 }
 
-// -------------------- PACKAGE BOT TAR --------------------
-function packageBotTarball(botFolder = "my-bot") {
+// -------------------- PACKAGE GITHUB REPO --------------------
+function packageGitRepo(repoUrl = "https://github.com/Tennor-modz/trashcore-ultra.git") {
+  const repoName = "trashcore-ultra";
   const tarballPath = path.resolve(__dirname, "bot.tar.gz");
-  const botPath = path.resolve(__dirname, botFolder);
+  const clonePath = path.resolve(__dirname, repoName);
 
   try {
-    execSync(`tar -czf ${tarballPath} -C ${botPath} .`);
+    if (fs.existsSync(clonePath)) {
+      fs.rmSync(clonePath, { recursive: true, force: true });
+    }
+
+    execSync(`git clone ${repoUrl}`, { stdio: "inherit" });
+    execSync(`tar -czf ${tarballPath} -C ${clonePath} .`);
     console.log("✅ Tarball created:", tarballPath);
     return tarballPath;
   } catch (err) {
-    console.error("❌ Failed to create tarball:", err.message);
+    console.error("❌ Failed to package repo:", err.message);
     return null;
   }
 }
@@ -55,7 +61,6 @@ async function detectProcfileContent(tarballPath) {
       });
 
       extract.on("finish", () => resolve(content.trim()));
-
       fs.createReadStream(tarballPath).pipe(gunzip()).pipe(extract).on("error", () => resolve(""));
     });
   } catch {
@@ -76,7 +81,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   });
   res.flushHeaders();
 
-  const tarballPath = packageBotTarball("my-bot");
+  const tarballPath = packageGitRepo();
   if (!tarballPath) {
     res.write(`data: ❌ Tarball packaging failed\n\n`);
     return res.end();
