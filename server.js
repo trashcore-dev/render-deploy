@@ -67,7 +67,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
       { SESSION_ID: sessionId },
       { headers: { Authorization: Bearer ${HEROKUAPIKEY}, Accept: "application/vnd.heroku+json; version=3" } }
     );
-    res.write(data: ✅ SESSION_ID configured wait the deployment progress to complete.\n\n);
+    res.write(data: ✅ SESSION_ID configured.\n\n);
 
     const roles = await detectProcfileRoles(repo);
     res.write( 🔍 Detected roles in Procfile: ${roles.join(", ")}\n\n);
