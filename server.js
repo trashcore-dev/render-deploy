@@ -185,5 +185,84 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   }
 });
 
+// -------------------- DYNOS & APP MANAGEMENT --------------------
+
+// Restart dynos
+app.post("/restart/:appName", async (req, res) => {
+  const { appName } = req.params;
+  const sanitizedAppName = sanitizeAppName(appName);
+
+  try {
+    await axios.delete(`https://api.heroku.com/apps/${sanitizedAppName}/dynos`, {
+      headers: {
+        Authorization: `Bearer ${HEROKU_API_KEY}`,
+        Accept: "application/vnd.heroku+json; version=3"
+      }
+    });
+    res.json({ success: true, message: `✅ Dynos restarted for ${sanitizedAppName}` });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json({ success: false, message: "❌ Failed to restart dynos" });
+  }
+});
+
+// Update SESSION_ID
+app.post("/update-session/:appName", async (req, res) => {
+  const { appName } = req.params;
+  const { sessionId } = req.body;
+  if (!sessionId) return res.status(400).json({ success: false, message: "Session ID required" });
+
+  try {
+    await axios.patch(
+      `https://api.heroku.com/apps/${appName}/config-vars`,
+      { SESSION_ID: sessionId },
+      { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+    );
+    res.json({ success: true, message: `✅ Session ID updated for ${appName}` });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json({ success: false, message: "❌ Failed to update session ID" });
+  }
+});
+
+// Delete app
+app.delete("/delete/:appName", async (req, res) => {
+  const { appName } = req.params;
+  try {
+    await axios.delete(`https://api.heroku.com/apps/${appName}`, {
+      headers: {
+        Authorization: `Bearer ${HEROKU_API_KEY}`,
+        Accept: "application/vnd.heroku+json; version=3"
+      }
+    });
+    res.json({ success: true, message: `🗑 App "${appName}" deleted successfully.` });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json({ success: false, message: "❌ Failed to delete app" });
+  }
+});
+
+// Get Heroku log session URL
+app.get("/logs/:appName", async (req, res) => {
+  const { appName } = req.params;
+  try {
+    const logRes = await axios.post(
+      `https://api.heroku.com/apps/${appName}/log-sessions`,
+      { tail: true },
+      {
+        headers: {
+          Authorization: `Bearer ${HEROKU_API_KEY}`,
+          Accept: "application/vnd.heroku+json; version=3"
+        }
+      }
+    );
+    res.json({ url: logRes.data.logplex_url });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json({ message: "❌ Failed to get logs" });
+  }
+});
+
+// -------------------- START SERVER --------------------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 API running on port ${PORT}`));
