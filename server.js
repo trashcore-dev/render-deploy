@@ -8,7 +8,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const HEROKUAPIKEY = process.env.HEROKUAPIKEY;
+const HEROKU_API_KEY = process.env.HEROKU_API_KEY;
 
 // -------------------- SANITIZE APP NAME --------------------
 function sanitizeAppName(name) {
@@ -58,14 +58,14 @@ res.flushHeaders();
     await axios.post(
       "https://api.heroku.com/apps",
       { name: sanitizedAppName },
-      { headers: { Authorization: `Bearer ${HEROKUAPIKEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+      { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
     res.write(`data: ✅ App created: ${sanitizedAppName}\n\n`);
 
     await axios.patch(
       `https://api.heroku.com/apps/${sanitizedAppName}/config-vars`,
       { SESSION_ID: sessionId },
-      { headers: { Authorization: `Bearer ${HEROKUAPIKEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+      { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
     res.write(`data: ✅ SESSION_ID configured.\n\n`);
 
@@ -75,7 +75,7 @@ res.flushHeaders();
     const buildRes = await axios.post(
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
       { source_blob: { url: repo } },
-      { headers: { Authorization: `Bearer ${HEROKUAPIKEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+      { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
 
     const buildId = buildRes.data.id;
@@ -85,7 +85,7 @@ res.flushHeaders();
       try {
         const statusRes = await axios.get(
           `https://api.heroku.com/apps/${sanitizedAppName}/builds/${buildId}`,
-          { headers: { Authorization: `Bearer ${HEROKUAPIKEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+          { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
         );
 
         const status = statusRes.data.status;
@@ -98,7 +98,7 @@ res.flushHeaders();
           await axios.patch(
             `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
             { updates: [{ type: "web", quantity: 0 }, { type: "worker", quantity: 1, size: "basic" }] },
-            { headers: { Authorization: `Bearer ${HEROKUAPIKEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+            { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
           );
           res.write(`data: ⚙️ Dynos scaled: web=0, worker=1\n\n`);
           res.write(`data: 💾 Deployment complete! Bot URL: https://${sanitizedAppName}.herokuapp.com\n\n`);
@@ -135,7 +135,7 @@ app.post("/restart/:appName", async (req, res) => {
   try {
     await axios.delete(`https://api.heroku.com/apps/${sanitizedAppName}/dynos`, {
       headers: { 
-        Authorization: `Bearer ${HEROKUAPIKEY}`, 
+        Authorization: `Bearer ${HEROKU_API_KEY}`, 
         Accept: "application/vnd.heroku+json; version=3" 
       }
     });
@@ -156,7 +156,7 @@ app.post("/update-session/:appName", async (req, res) => {
     await axios.patch(
       `https://api.heroku.com/apps/${appName}/config-vars`,
       { SESSION_ID: sessionId },
-      { headers: { Authorization: `Bearer ${HEROKUAPIKEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+      { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
     res.json({ success: true, message: `✅ Session ID updated for ${appName}` });
   } catch (err) {
@@ -170,7 +170,7 @@ app.delete("/delete/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
     await axios.delete(`https://api.heroku.com/apps/${appName}`, {
-      headers: { Authorization: `Bearer ${HEROKUAPIKEY}`, Accept: "application/vnd.heroku+json; version=3" }
+      headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" }
     });
     res.json({ success: true, message: `🗑 App "${appName}" deleted successfully.` });
   } catch (err) {
@@ -186,7 +186,7 @@ app.get("/logs/:appName", async (req, res) => {
     const logRes = await axios.post(
       `https://api.heroku.com/apps/${appName}/log-sessions`,
       { tail: true },
-      { headers: { Authorization: `Bearer ${HEROKUAPIKEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+      { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
     );
     res.json({ url: logRes.data.logplex_url });
   } catch (err) {
