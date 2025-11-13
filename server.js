@@ -20,24 +20,18 @@ function sanitizeAppName(name) {
 }
 
 // -------------------- DETECT PROCFILE --------------------
-async function detectProcfileRoles(tarballUrl) {
+async function detectProcfileContent(tarballUrl) {
   try {
     const response = await axios.get(tarballUrl, { responseType: "stream" });
     const extract = tar.extract();
-    const roles = [];
 
     return await new Promise((resolve) => {
+      let procfileContent = "";
+
       extract.on("entry", (header, stream, next) => {
-        if (/Procfile$/i.test(header.name)) {
-          let content = "";
-          stream.on("data", chunk => content += chunk.toString());
-          stream.on("end", () => {
-            content.split(/\r?\n/).forEach(line => {
-              const match = line.trim().match(/^([a-zA-Z0-9_-]+)\s*:/);
-              if (match) roles.push(match[1]);
-            });
-            next();
-          });
+        if (header.name === "Procfile") {
+          stream.on("data", chunk => procfileContent += chunk.toString());
+          stream.on("end", next);
         } else {
           stream.resume();
           stream.on("end", next);
@@ -45,17 +39,17 @@ async function detectProcfileRoles(tarballUrl) {
       });
 
       extract.on("finish", () => {
-        resolve(roles.length ? roles : ["web"]);
+        resolve(procfileContent.trim());
       });
 
       response.data.pipe(gunzip()).pipe(extract).on("error", err => {
         console.error("Tarball extraction error:", err.message);
-        resolve(["web"]);
+        resolve("");
       });
     });
   } catch (err) {
     console.error("Error reading tarball:", err.message);
-    return ["web"];
+    return "";
   }
 }
 
@@ -87,8 +81,8 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     );
     res.write(`data: ✅ SESSION_ID configured.\n\n`);
 
-    const roles = await detectProcfileRoles(repo);
-    res.write(`data: 🔍 Detected roles in Procfile: ${roles.join(", ")}\n\n`);
+    const procfile = await detectProcfileContent(repo);
+    res.write(`data: 🔍 Procfile content:\n${procfile}\n\n`);
 
     const buildRes = await axios.post(
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
