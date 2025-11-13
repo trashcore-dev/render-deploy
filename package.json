@@ -11,6 +11,8 @@
     "better-sqlite3": "latest",
     "cors": "latest",
     "express": "latest",
+    "tar-stream": "latest",
+    "gunzip-maybe": "latest",
     "os": "^0.1.1"
   }
 }
