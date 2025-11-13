@@ -6,7 +6,6 @@ const gunzip = require("gunzip-maybe");
 const { execSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
-const FormData = require("form-data");
 
 const app = express();
 app.use(cors());
@@ -44,21 +43,17 @@ function packageGitRepo(repoUrl = "https://github.com/Tennor-modz/trashcore-ultr
   }
 }
 
-// -------------------- UPLOAD TO FILE.IO --------------------
-async function uploadToFileIo(tarballPath) {
-  const form = new FormData();
-  form.append("file", fs.createReadStream(tarballPath));
-
-  try {
-    const res = await axios.post("https://file.io", form, {
-      headers: form.getHeaders()
-    });
-    return res.data.link;
-  } catch (err) {
-    console.error("❌ Upload to File.io failed:", err.message);
-    return null;
+// -------------------- SERVE TARBALL --------------------
+app.get("/deploys/bot.tar.gz", (req, res) => {
+  const filePath = path.resolve(__dirname, "bot.tar.gz");
+  if (fs.existsSync(filePath)) {
+    res.setHeader("Content-Type", "application/gzip");
+    res.setHeader("Content-Disposition", "attachment; filename=bot.tar.gz");
+    fs.createReadStream(filePath).pipe(res);
+  } else {
+    res.status(404).send("Tarball not found");
   }
-}
+});
 
 // -------------------- DETECT PROCFILE CONTENT --------------------
 async function detectProcfileContent(tarballPath) {
@@ -104,12 +99,6 @@ app.get("/deploy/:appName/logs", async (req, res) => {
     return res.end();
   }
 
-  const fileUrl = await uploadToFileIo(tarballPath);
-  if (!fileUrl) {
-    res.write(`data: ❌ Failed to upload tarball to File.io\n\n`);
-    return res.end();
-  }
-
   try {
     await axios.post(
       "https://api.heroku.com/apps",
@@ -139,7 +128,7 @@ app.get("/deploy/:appName/logs", async (req, res) => {
       `https://api.heroku.com/apps/${sanitizedAppName}/builds`,
       {
         source_blob: {
-          url: fileUrl,
+          url: "https://render-deploy-7mol.onrender.com/deploys/bot.tar.gz",
           version: "v1"
         }
       },
