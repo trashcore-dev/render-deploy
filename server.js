@@ -1,8 +1,8 @@
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
-const AdmZip = require("adm-zip"); // For reading Procfile from tarball
-const path = require("path");
+const tar = require("tar-stream");
+const gunzip = require("gunzip-maybe");
 
 const app = express();
 app.use(cors());
@@ -22,22 +22,43 @@ function sanitizeAppName(name) {
 // -------------------- DETECT PROCFILE --------------------
 async function detectProcfileRoles(tarballUrl) {
   try {
-    const response = await axios.get(tarballUrl, { responseType: "arraybuffer" });
-    const zip = new AdmZip(response.data);
-    const procfileEntry = zip.getEntries().find(e => /Procfile$/i.test(e.entryName));
-    if (!procfileEntry) return ["worker"];
-
-    const content = procfileEntry.getData().toString("utf-8");
+    const response = await axios.get(tarballUrl, { responseType: "stream" });
+    const extract = tar.extract();
     const roles = [];
-    content.split(/\r?\n/).forEach(line => {
-      const match = line.match(/^([a-zA-Z0-9_-]+):/);
-      if (match) roles.push(match[1]);
-    });
 
-    return roles.length ? roles : ["worker"];
+    return await new Promise((resolve) => {
+      let found = false;
+
+      extract.on("entry", (header, stream, next) => {
+        if (/Procfile$/i.test(header.name)) {
+          found = true;
+          let content = "";
+          stream.on("data", chunk => content += chunk.toString());
+          stream.on("end", () => {
+            content.split(/\r?\n/).forEach(line => {
+              const match = line.trim().match(/^([a-zA-Z0-9_-]+)\s*:/);
+              if (match) roles.push(match[1]);
+            });
+            next();
+          });
+        } else {
+          stream.resume();
+          stream.on("end", next);
+        }
+      });
+
+      extract.on("finish", () => {
+        resolve(roles.length ? roles : ["web"]);
+      });
+
+      response.data.pipe(gunzip()).pipe(extract).on("error", err => {
+        console.error("Tarball extraction error:", err.message);
+        resolve(["web"]);
+      });
+    });
   } catch (err) {
-    console.error("Error reading Procfile:", err.message);
-    return ["worker"];
+    console.error("Error reading tarball:", err.message);
+    return ["web"];
   }
 }
 
@@ -48,11 +69,11 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   const sanitizedAppName = sanitizeAppName(appName);
 
   res.set({
-  "Content-Type": "text/event-stream",
-  "Cache-Control": "no-cache",
-  Connection: "keep-alive"
-});
-res.flushHeaders();
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive"
+  });
+  res.flushHeaders();
 
   try {
     await axios.post(
@@ -96,12 +117,12 @@ res.flushHeaders();
           res.write(`data: ✅ Build succeeded!\n\n`);
 
           await axios.patch(
-  `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
-  { updates: [{ type: "web", quantity: 1, size: "basic" }] },
-  { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
-);
+            `https://api.heroku.com/apps/${sanitizedAppName}/formation`,
+            { updates: [{ type: "web", quantity: 1, size: "basic" }] },
+            { headers: { Authorization: `Bearer ${HEROKU_API_KEY}`, Accept: "application/vnd.heroku+json; version=3" } }
+          );
 
-         res.write(`data: ⚙️ Dynos scaled: web=1\n\n`);
+          res.write(`data: ⚙️ Dynos scaled: web=1\n\n`);
           res.write(`data: 💾 Deployment complete! Bot URL: https://${sanitizedAppName}.herokuapp.com\n\n`);
           res.end();
         }
@@ -128,16 +149,15 @@ res.flushHeaders();
 
 // -------------------- DYNOS & APP MANAGEMENT --------------------
 
-// Restart dynos for a given app
 app.post("/restart/:appName", async (req, res) => {
   const { appName } = req.params;
   const sanitizedAppName = sanitizeAppName(appName);
-  
+
   try {
     await axios.delete(`https://api.heroku.com/apps/${sanitizedAppName}/dynos`, {
-      headers: { 
-        Authorization: `Bearer ${HEROKU_API_KEY}`, 
-        Accept: "application/vnd.heroku+json; version=3" 
+      headers: {
+        Authorization: `Bearer ${HEROKU_API_KEY}`,
+        Accept: "application/vnd.heroku+json; version=3"
       }
     });
     res.json({ success: true, message: `✅ Dynos restarted for ${sanitizedAppName}` });
@@ -147,7 +167,6 @@ app.post("/restart/:appName", async (req, res) => {
   }
 });
 
-// Update session ID for a given app
 app.post("/update-session/:appName", async (req, res) => {
   const { appName } = req.params;
   const { sessionId } = req.body;
@@ -166,7 +185,6 @@ app.post("/update-session/:appName", async (req, res) => {
   }
 });
 
-// Delete an app
 app.delete("/delete/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
@@ -180,7 +198,6 @@ app.delete("/delete/:appName", async (req, res) => {
   }
 });
 
-// Get Heroku log session URL
 app.get("/logs/:appName", async (req, res) => {
   const { appName } = req.params;
   try {
