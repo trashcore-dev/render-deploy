@@ -48,15 +48,11 @@ app.get("/deploy/:appName/logs", async (req, res) => {
   const sanitizedAppName = sanitizeAppName(appName);
 
   res.set({
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive"
-  });
-  res.flushHeaders();
-
-  // ✅ Prevent Render timeout
-  req.socket.setKeepAlive(true);
-  req.socket.setTimeout(0);
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  Connection: "keep-alive"
+});
+res.flushHeaders();
 
   try {
     await axios.post(
